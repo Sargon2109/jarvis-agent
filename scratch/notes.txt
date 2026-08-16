@@ -1,5 +1,0 @@
-Things a homework-checking agent should be able to do:
-
-1. Verify that answers are correct (or match an expected solution/rubric).
-2. Check work for completeness — all required questions/steps answered, nothing skipped.
-3. Give clear, constructive feedback on mistakes, including where and why the work went wrong.

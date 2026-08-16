@@ -147,6 +147,13 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# Jarvis persistent store (personal captured thoughts — never commit)
+data/
+
+# Agent write-sandbox (ephemeral drafts — keep the folder, ignore its contents)
+scratch/*
+!scratch/.gitkeep
+
 # Environments
 .env
 .envrc

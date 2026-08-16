@@ -1,0 +1,101 @@
+"""The Jarvis orchestrator: turns a thought-dump into remembered, delegated work.
+
+:func:`build_orchestrator_options` assembles the :class:`ClaudeAgentOptions` that
+wire together the store tools, every available specialist (built-in plus anything
+in the persistent registry), and the system prompt that tells Jarvis to *capture
+first, then delegate*.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions
+
+from .agents import (
+    BUILTIN_AGENTS,
+    BUILTIN_DOMAIN_MAP,
+    GENERALIST,
+    RESERVED_NAMES,
+)
+from .agent_tools import agent_tool_names, build_agent_tools
+from .registry import AgentRegistry
+from .storage import JSONStore, Store
+from .tools import SERVER_NAME, build_store_server, store_tool_names
+
+#: The model driving the orchestrator itself.
+ORCHESTRATOR_MODEL = "claude-sonnet-5"
+
+
+def available_agents(
+    registry: Optional[AgentRegistry] = None,
+) -> tuple[dict[str, AgentDefinition], dict[str, str]]:
+    """All agents (built-in + registry) and the combined domain -> agent map."""
+    registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
+    agents = {**BUILTIN_AGENTS, **registry.definitions()}
+    domain_map = {**BUILTIN_DOMAIN_MAP, **registry.domain_map()}
+    # A domain may only route to an agent that actually exists.
+    domain_map = {d: n for d, n in domain_map.items() if n in agents}
+    return agents, domain_map
+
+
+def _routing_table(domain_map: dict[str, str]) -> str:
+    lines = [f"  {domain} -> {name}" for domain, name in sorted(domain_map.items())]
+    return "\n".join(lines)
+
+
+def build_system_prompt(domain_map: dict[str, str]) -> str:
+    """The orchestrator's instructions, including the live routing table."""
+    return (
+        "You are Jarvis, a personal chief of staff. You orchestrate the user's "
+        "work; you do not do it yourself.\n\n"
+        "When the user dumps their thoughts:\n\n"
+        "1. CAPTURE FIRST. Break the dump into individual items and save each one "
+        "with capture_thought before anything else. Choose a kind (project = "
+        "ongoing effort, task = a to-do, reminder = time-based nudge) and a short "
+        "domain. Use add_reminder for anything with a date. Nothing the user says "
+        "may go unrecorded.\n\n"
+        "2. REPORT. Use list_plate (or agenda, for what's due) to reflect back "
+        "what's now on the user's plate.\n\n"
+        "3. DELEGATE. For any item needing real work, hand it to a specialist with "
+        "the Task tool. Route by the item's domain:\n"
+        f"{_routing_table(domain_map)}\n\n"
+        f"   Anything not in that table goes to '{GENERALIST}'. Never skip an item "
+        f"because no specialist fits — that is exactly what '{GENERALIST}' is for. "
+        "Never do the work yourself.\n\n"
+        "4. GROW, BUT ONLY WHEN ASKED. If an area keeps recurring with no specialist, "
+        "propose_agents will tell you. Mention it to the user and ask whether they "
+        "want a specialist for it. Only call create_agent once they have clearly said "
+        "yes in this conversation — never create one on your own initiative, and "
+        "never create one the first time a new topic appears.\n\n"
+        "If the user is only asking what's on their plate, just report — don't "
+        "re-capture or delegate. Be concise: your value is that nothing is "
+        "forgotten and the right specialist picks up each piece."
+    )
+
+
+def build_orchestrator_options(
+    store: Optional[Store] = None,
+    registry: Optional[AgentRegistry] = None,
+    dump_id: Optional[str] = None,
+) -> ClaudeAgentOptions:
+    """Build the orchestrator's options.
+
+    ``store`` and ``registry`` can be injected (tests do this); otherwise the
+    defaults at the standard locations are used. ``dump_id`` links every item
+    captured during this run back to the brain-dump it came from.
+    """
+    store = store or JSONStore()
+    registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
+    agents, domain_map = available_agents(registry)
+    # The orchestrator alone gets the agent-management tools; specialists hold
+    # only the store tools their own definitions grant them.
+    extra = build_agent_tools(store, registry, list(domain_map))
+    return ClaudeAgentOptions(
+        system_prompt=build_system_prompt(domain_map),
+        model=ORCHESTRATOR_MODEL,
+        allowed_tools=["Task", *store_tool_names(), *agent_tool_names()],
+        permission_mode="acceptEdits",
+        mcp_servers={SERVER_NAME: build_store_server(store, dump_id, extra)},
+        agents=agents,
+    )

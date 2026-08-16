@@ -1,0 +1,9 @@
+# Normalize line endings so the repo stays clean across Windows and macOS.
+# Text files are stored LF in git and checked out native on each machine.
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.jsonl text eol=lf
+*.txt   text eol=lf
