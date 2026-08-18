@@ -1,2 +1,4 @@
-claude-agent-sdk
-python-dotenv
+# Pinned: the SDK is the dependency that will actually break Jarvis if it
+# drifts. Upgrade deliberately (bump, run python run_tests.py, commit).
+claude-agent-sdk==0.2.139
+python-dotenv==1.2.3

@@ -8,7 +8,7 @@ Built on [Anthropic's Claude Agent SDK](https://docs.claude.com).
 
 ---
 
-## Two ways to use it
+## Three ways to use it
 
 **1. The offline CLI — fast, free, no API.** Day-to-day management of your plate.
 
@@ -47,6 +47,32 @@ The orchestrator breaks the dump into individual items, saves each with the
 right kind/domain, tells you what's now on your plate, and delegates deeper work
 to specialist subagents. Every run prints its own API cost.
 
+**3. The command desk — the dashboard.** Same orchestrator, in a browser.
+
+```bash
+python -m jarvis serve            # http://127.0.0.1:8765
+python -m jarvis serve --port 9000 --no-browser
+```
+
+Chat-first, like any chat client: you type a dump, and the orchestrator runs
+behind it. The difference is that you *watch* it work — every capture, every
+delegation, and every specialist's reply stream into the feed live (rendered as
+markdown), while the plate re-renders beside the conversation as items land.
+The desk holds **one continuous conversation** — follow-ups actually follow up,
+because each turn resumes the same SDK session; the New Session button starts
+fresh. A Files tab shows the drafts specialists write into `scratch/`, quick-add
+puts items on the plate with no model involved, and the header tracks what this
+session and this month have actually cost.
+
+It's stdlib-only (`ThreadingHTTPServer` + server-sent events), so there's no
+build step. It binds to `127.0.0.1` by design, and loopback alone isn't trusted:
+every request must carry a loopback `Host` (stops DNS rebinding) and, for
+mutations, a same-origin `Origin` plus `application/json` (stops cross-site
+requests from pages your browser happens to have open — which would otherwise
+be able to spend your API credit). Every run is capped by `max_turns` and
+`max_budget_usd` (defaults 100 / $3.00; override with `JARVIS_MAX_TURNS` and
+`JARVIS_MAX_BUDGET_USD`), so a runaway run stops instead of running a tab.
+
 ---
 
 ## Setup
@@ -54,9 +80,11 @@ to specialist subagents. Every run prints its own API cost.
 ```bash
 python -m venv venv
 venv\Scripts\activate            # Windows (use source venv/bin/activate on macOS/Linux)
-pip install -r requirements.txt
+pip install -r requirements.txt  # pinned; or `pip install -e .` for the `jarvis` command
 copy .env.example .env           # then paste your ANTHROPIC_API_KEY (only needed for main.py)
 ```
+
+Python 3.10+ is required (the Claude Agent SDK's floor).
 
 ---
 
@@ -78,6 +106,9 @@ Everything is a small, single-responsibility piece of the `jarvis/` package:
 | `jarvis/agents/` | The specialists (see below). |
 | `jarvis/registry.py` | Custom agents that persist between runs. |
 | `jarvis/cli.py` | The offline command line. |
+| `jarvis/server.py` | The command desk: JSON API + streamed chat over the live store. |
+| `jarvis/ledger.py` | Append-only cost ledger — what every run actually spent. |
+| `jarvis/web/` | The desk's single-page front end (no build step). |
 | `main.py` | The LLM dump entry point. |
 
 ### The specialists
@@ -130,6 +161,23 @@ The **store is the spine**: both the CLI and the agents read and write the same
 `data/plate.json`. The `Store` interface means a future SQLite backend can drop
 in without touching anything else.
 
+### The command desk
+
+`jarvis serve` is the same system with a face on it. Three panels: the specialist
+roster on the left (each one lights up while it's actually working), the
+conversation in the middle, and the live plate on the right.
+
+The interesting part is the attribution. The SDK tags every streamed message with
+the `parent_tool_use_id` of the delegation that produced it, so the desk can show
+*which specialist is talking* rather than one undifferentiated wall of output —
+you see the club agent and the startup agent working in parallel, each under its
+own heading.
+
+Chat turns are serialized behind a lock, and the store itself now locks every
+read-modify-write — the desk's threaded server means quick-adds, item clicks,
+and the orchestrator's own captures can all write at once, and none of them may
+lose another's work. (`tests/test_concurrency.py` hammers exactly this.)
+
 ### Your data
 
 Everything is local files under `data/` (gitignored — your thoughts never go to
@@ -140,6 +188,7 @@ GitHub):
 | `plate.json` | The items Jarvis parsed out of your dumps. | `JARVIS_STORE_PATH` |
 | `dumps.jsonl` | Every brain-dump, verbatim, append-only. | `JARVIS_DUMPS_PATH` |
 | `agents.json` | Custom agents added over time. | `JARVIS_REGISTRY_PATH` |
+| `costs.jsonl` | One line per run: cost, turns, duration, dump id. | `JARVIS_LEDGER_PATH` |
 
 Items carry the `dump_id` they came from, so any task can be traced back to what
 you actually said — and a dump counts as "sorted" once items point at it.
@@ -173,7 +222,8 @@ All tests run fully offline (no API calls).
 3. **Domain agents** — specialists per area, a generalist catch-all, a persistent
    registry, and promotion so new agents are earned. ✅
 4. **Automation + reminders** — the briefing and the scheduling command. ✅
-5. **Frontend** — the "command desk" dashboard over the live store.
+5. **Frontend** — the "command desk" dashboard over the live store. ✅
 
-Still ahead: having the morning run *act* rather than only report (drafting the
-work that doesn't need you), and the dashboard.
+Still ahead: having the morning run *act* rather than only report — drafting the
+work that doesn't need you, so the briefing arrives with the easy things already
+done.

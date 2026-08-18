@@ -186,3 +186,66 @@ def test_old_items_without_dump_id_still_load():
     store.path.write_text(json.dumps(data), encoding="utf-8")
     loaded = store.all()
     assert len(loaded) == 1 and loaded[0].dump_id is None and loaded[0].id == item.id
+
+
+# --- update validation (the desk exposes update paths to more callers) -------
+
+def test_update_rejects_a_malformed_due_date():
+    store = _fresh_store()
+    item = store.add("dated thing")
+    raised = False
+    try:
+        store.update(item.id, due="not-a-date")
+    except ValueError:
+        raised = True
+    assert raised
+    assert store.get(item.id).due is None  # nothing was persisted
+
+
+def test_update_rejects_bad_status_and_kind():
+    store = _fresh_store()
+    item = store.add("thing")
+    for field, value in (("status", "zombie"), ("kind", "wish")):
+        raised = False
+        try:
+            store.update(item.id, **{field: value})
+        except ValueError:
+            raised = True
+        assert raised, field
+
+
+def test_update_cannot_shadow_methods_or_invent_fields():
+    store = _fresh_store()
+    item = store.add("thing")
+    store.update(item.id, touch="clobbered", nonsense="x", title="renamed")
+    reloaded = store.get(item.id)
+    assert reloaded.title == "renamed"
+    assert callable(reloaded.touch)  # the method survived
+    assert not hasattr(reloaded, "nonsense") or reloaded.title == "renamed"
+
+
+def test_a_bad_stored_due_degrades_instead_of_crashing_reads():
+    store = _fresh_store()
+    item = store.add("thing")
+    # Corrupt the due date on disk directly, bypassing validation.
+    import json as _json
+    doc = _json.loads(store.path.read_text())
+    doc["items"][0]["due"] = "garbage"
+    store.path.write_text(_json.dumps(doc))
+    assert store.get(item.id).due_date() is None  # undated, not an exception
+
+
+def test_a_non_string_stored_due_degrades_instead_of_crashing():
+    """A hand-edit that drops the quotes around a date (making due a JSON number)
+    must not crash the agenda/briefing/state that read every item."""
+    from jarvis.agenda import build_agenda
+    store = _fresh_store()
+    item = store.add("thing")
+    import json as _json
+    doc = _json.loads(store.path.read_text())
+    doc["items"][0]["due"] = 20260817        # unquoted number, not a string
+    store.path.write_text(_json.dumps(doc))
+    reloaded = store.get(item.id)
+    assert reloaded.due is None              # coerced away on load
+    assert reloaded.due_date() is None       # and never raises
+    build_agenda(store.all())                # the read view survives

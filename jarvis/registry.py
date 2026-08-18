@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,6 +104,8 @@ class AgentRegistry:
         self.path = Path(path) if path is not None else default_registry_path()
         #: Names that custom agents may not use (the built-ins).
         self.reserved = reserved
+        # Same read-modify-write hazard as JSONStore, same cure.
+        self._lock = threading.RLock()
 
     # --- low-level read / write ---------------------------------------------
     def _read(self) -> list[AgentRecord]:
@@ -113,7 +116,10 @@ class AgentRegistry:
                 doc = json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             raise RegistryError(f"Could not read registry at {self.path}: {exc}") from exc
-        return [AgentRecord.from_dict(d) for d in doc.get("agents", [])]
+        try:
+            return [AgentRecord.from_dict(d) for d in doc.get("agents", [])]
+        except TypeError as exc:
+            raise RegistryError(f"Malformed agent record in {self.path}: {exc}") from exc
 
     def _write(self, records: list[AgentRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,22 +173,24 @@ class AgentRegistry:
             reason=reason,
         )
         validate_record(record, reserved=self.reserved)
-        records = self._read()
-        if any(r.name == name for r in records):
-            raise RegistryError(f"an agent named {name!r} already exists")
         # Fail before persisting if the tools can't produce a valid definition.
         record.to_definition()
-        records.append(record)
-        self._write(records)
+        with self._lock:
+            records = self._read()
+            if any(r.name == name for r in records):
+                raise RegistryError(f"an agent named {name!r} already exists")
+            records.append(record)
+            self._write(records)
         return record
 
     def remove(self, name: str) -> bool:
         """Delete a custom agent. Returns True if something was removed."""
-        records = self._read()
-        kept = [r for r in records if r.name != name]
-        if len(kept) == len(records):
-            return False
-        self._write(kept)
+        with self._lock:
+            records = self._read()
+            kept = [r for r in records if r.name != name]
+            if len(kept) == len(records):
+                return False
+            self._write(kept)
         return True
 
     def definitions(self) -> dict[str, AgentDefinition]:

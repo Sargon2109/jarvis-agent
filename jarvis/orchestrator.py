@@ -8,6 +8,7 @@ first, then delegate*.
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions
@@ -25,6 +26,41 @@ from .tools import SERVER_NAME, build_store_server, store_tool_names
 
 #: The model driving the orchestrator itself.
 ORCHESTRATOR_MODEL = "claude-sonnet-5"
+
+#: Caps on a single run. A hung loop or a runaway delegation chain should cost
+#: a bounded amount of money and time, never "whatever it takes". Generous —
+#: the six-specialist README example fits comfortably — but finite.
+DEFAULT_MAX_TURNS = 100
+DEFAULT_MAX_BUDGET_USD = 3.00
+
+#: Env overrides for the caps, so the budget is a setting, not a code edit.
+MAX_TURNS_ENV = "JARVIS_MAX_TURNS"
+MAX_BUDGET_ENV = "JARVIS_MAX_BUDGET_USD"
+
+
+def _env_cap(env: str, default: float, cast) -> float:
+    """Read a numeric cap from the environment, falling back on bad values."""
+    raw = os.environ.get(env)
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _positive(explicit, env: str, default: float, cast):
+    """Resolve a run cap: explicit arg, then env, then default — but a
+    non-positive value from ANY source means "no cap", which is exactly what
+    these caps exist to prevent, so it falls back to the default instead."""
+    if explicit is not None:
+        try:
+            value = cast(explicit)
+        except (TypeError, ValueError):
+            return cast(default)
+        return cast(value) if value > 0 else cast(default)
+    return cast(_env_cap(env, default, cast))
 
 
 def available_agents(
@@ -78,12 +114,23 @@ def build_orchestrator_options(
     store: Optional[Store] = None,
     registry: Optional[AgentRegistry] = None,
     dump_id: Optional[str] = None,
+    *,
+    resume: Optional[str] = None,
+    max_turns: Optional[int] = None,
+    max_budget_usd: Optional[float] = None,
 ) -> ClaudeAgentOptions:
     """Build the orchestrator's options.
 
     ``store`` and ``registry`` can be injected (tests do this); otherwise the
     defaults at the standard locations are used. ``dump_id`` links every item
     captured during this run back to the brain-dump it came from.
+
+    ``resume`` continues an existing SDK session — this is what gives the
+    command desk an actual conversation instead of per-message amnesia, and
+    what makes "the user said yes earlier in this conversation" a state that
+    can exist at all. ``max_turns``/``max_budget_usd`` default to the
+    ``JARVIS_MAX_TURNS``/``JARVIS_MAX_BUDGET_USD`` env vars, then the module
+    defaults; a run that hits a cap stops cleanly instead of running a tab.
     """
     store = store or JSONStore()
     registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
@@ -98,4 +145,7 @@ def build_orchestrator_options(
         permission_mode="acceptEdits",
         mcp_servers={SERVER_NAME: build_store_server(store, dump_id, extra)},
         agents=agents,
+        resume=resume,
+        max_turns=_positive(max_turns, MAX_TURNS_ENV, DEFAULT_MAX_TURNS, int),
+        max_budget_usd=_positive(max_budget_usd, MAX_BUDGET_ENV, DEFAULT_MAX_BUDGET_USD, float),
     )

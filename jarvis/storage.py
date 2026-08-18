@@ -19,10 +19,13 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
-from .models import Item, Kind, STATUSES, Status
+from dataclasses import fields
+
+from .models import Item, KINDS, Kind, STATUSES, Status, parse_due
 
 #: Fallback location: <repo>/data/plate.json (the data/ dir is gitignored).
 DEFAULT_STORE_PATH = Path(__file__).resolve().parent.parent / "data" / "plate.json"
@@ -87,8 +90,20 @@ class JSONStore:
     #: Fields that must never be overwritten by :meth:`update`.
     _IMMUTABLE = frozenset({"id", "created_at"})
 
+    #: Fields :meth:`update` may touch — real Item fields only, so a stray key
+    #: can neither invent attributes nor shadow a method like ``touch``.
+    _UPDATABLE = frozenset(f.name for f in fields(Item)) - _IMMUTABLE
+
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path is not None else default_store_path()
+        # Every mutation is a read-modify-write over the whole file. Under the
+        # command desk's threaded HTTP server two concurrent writers each
+        # rewrite the file from their own read and the last one wins — the
+        # other's items silently vanish. All in-process writers share the one
+        # injected store instance, so an instance lock closes that race.
+        # (Cross-process safety — CLI while the server runs — is the SQLite
+        # backend's job, not this file's.)
+        self._lock = threading.RLock()
 
     # --- low-level read / write ---------------------------------------------
     def _read(self) -> list[Item]:
@@ -99,7 +114,12 @@ class JSONStore:
                 doc = json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             raise StoreError(f"Could not read store at {self.path}: {exc}") from exc
-        return [Item.from_dict(d) for d in doc.get("items", [])]
+        try:
+            return [Item.from_dict(d) for d in doc.get("items", [])]
+        except TypeError as exc:
+            # A record missing a required field is corruption, not a crash:
+            # surface it as the error every caller already handles.
+            raise StoreError(f"Malformed item record in {self.path}: {exc}") from exc
 
     def _write(self, items: list[Item]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,9 +166,10 @@ class JSONStore:
             agent=agent,
             dump_id=dump_id,
         )
-        items = self._read()
-        items.append(item)
-        self._write(items)
+        with self._lock:
+            items = self._read()
+            items.append(item)
+            self._write(items)
         return item
 
     def all(self) -> list[Item]:
@@ -176,18 +197,27 @@ class JSONStore:
         """Apply field changes to an item and persist. Returns it, or None.
 
         Unknown and immutable fields (id, created_at) are ignored so a bad key
-        can't corrupt the record.
+        can't corrupt the record. Values that every read view depends on are
+        validated here — one malformed due date would otherwise brick the
+        agenda, the briefing, and the desk's /api/state at once.
         """
-        items = self._read()
-        for item in items:
-            if item.id == item_id:
-                for key, value in changes.items():
-                    if key in self._IMMUTABLE or not hasattr(item, key):
-                        continue
-                    setattr(item, key, value)
-                item.touch()
-                self._write(items)
-                return item
+        with self._lock:
+            items = self._read()
+            for item in items:
+                if item.id == item_id:
+                    for key, value in changes.items():
+                        if key not in self._UPDATABLE:
+                            continue
+                        if key == "due":
+                            value = parse_due(value)  # raises ValueError when malformed
+                        elif key == "status" and value not in STATUSES:
+                            raise ValueError(f"status must be one of {STATUSES}, got {value!r}")
+                        elif key == "kind" and value not in KINDS:
+                            raise ValueError(f"kind must be one of {KINDS}, got {value!r}")
+                        setattr(item, key, value)
+                    item.touch()
+                    self._write(items)
+                    return item
         return None
 
     def set_status(self, item_id: str, status: Status) -> Optional[Item]:
@@ -200,9 +230,10 @@ class JSONStore:
 
     def remove(self, item_id: str) -> bool:
         """Delete an item by id. Returns True if something was removed."""
-        items = self._read()
-        kept = [item for item in items if item.id != item_id]
-        if len(kept) == len(items):
-            return False
-        self._write(kept)
+        with self._lock:
+            items = self._read()
+            kept = [item for item in items if item.id != item_id]
+            if len(kept) == len(items):
+                return False
+            self._write(kept)
         return True

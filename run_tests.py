@@ -9,22 +9,20 @@ Usage:  python run_tests.py
 import asyncio
 import importlib
 import inspect
+import sys
 import traceback
+from pathlib import Path
 
-TEST_MODULES = [
-    "tests.test_models",
-    "tests.test_store",
-    "tests.test_agenda",
-    "tests.test_dumps",
-    "tests.test_promotion",
-    "tests.test_briefing",
-    "tests.test_scheduling",
-    "tests.test_tools",
-    "tests.test_agents",
-    "tests.test_registry",
-    "tests.test_agent_tools",
-    "tests.test_cli",
-]
+if not __debug__:
+    # Under ``python -O`` every assert is stripped and the whole suite would
+    # pass vacuously. Refuse to lie.
+    sys.exit("run_tests.py must run without -O (asserts are the tests)")
+
+#: Discovered, not listed: a new test file that nobody registers must still run.
+TEST_MODULES = sorted(
+    f"tests.{path.stem}"
+    for path in (Path(__file__).parent / "tests").glob("test_*.py")
+)
 
 
 def _collect(module):

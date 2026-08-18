@@ -122,10 +122,20 @@ class Item:
         self.updated_at = _utcnow_iso()
 
     def due_date(self) -> Optional[date]:
-        """The due date as a ``date`` object, or None if unset. Used by the agenda."""
+        """The due date as a ``date`` object, or None if unset or unparseable.
+
+        Tolerating a malformed stored date (hand-edited JSON, an old bug) means
+        one bad item degrades to "undated" instead of crashing every read view.
+        """
         if not self.due:
             return None
-        return datetime.strptime(self.due, DUE_FORMAT).date()
+        try:
+            return datetime.strptime(self.due, DUE_FORMAT).date()
+        except (ValueError, TypeError):
+            # TypeError guards a non-string stored value (e.g. an unquoted JSON
+            # number from a hand-edit): degrade to "undated", never crash the
+            # agenda, briefing, and /api/state that read every item.
+            return None
 
     def updated_dt(self) -> Optional[datetime]:
         """``updated_at`` as a timezone-aware datetime, or None if unparseable."""
@@ -154,7 +164,13 @@ class Item:
         reading an older store file.
         """
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        clean = {k: v for k, v in data.items() if k in known}
+        due = clean.get("due")
+        if due is not None and not isinstance(due, str):
+            # A non-string due can only be corruption; normalize it away rather
+            # than carry a value every date operation would choke on.
+            clean["due"] = None
+        return cls(**clean)
 
 
 def format_item(item: Item) -> str:

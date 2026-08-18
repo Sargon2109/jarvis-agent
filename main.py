@@ -24,6 +24,7 @@ from claude_agent_sdk import (
 )
 
 from jarvis.dumps import DumpLog
+from jarvis.ledger import CostLedger
 from jarvis.orchestrator import build_orchestrator_options
 from jarvis.tools import SERVER_NAME
 
@@ -73,7 +74,17 @@ async def main() -> None:
         elif isinstance(message, ResultMessage):
             cost = getattr(message, "total_cost_usd", None)
             if cost is not None:
-                print(f"\n[run cost: ${cost:.4f}]")
+                ledger = CostLedger()
+                try:
+                    ledger.append(
+                        cost,
+                        turns=message.num_turns,
+                        duration_ms=message.duration_ms,
+                        dump_id=dump.id,
+                    )
+                    print(f"\n[run cost: ${cost:.4f} | month so far: ${ledger.month_total():.2f}]")
+                except OSError:
+                    print(f"\n[run cost: ${cost:.4f}]")
 
 
 if __name__ == "__main__":

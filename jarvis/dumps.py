@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
@@ -75,16 +76,20 @@ class DumpLog:
 
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path is not None else default_dumps_path()
+        # Appends are single writes, but interleaved appends from the desk's
+        # HTTP threads could still tear a line — serialize them.
+        self._lock = threading.Lock()
 
     def append(self, text: str, *, source: str = "llm") -> DumpRecord:
         """Record a dump. Returns the stored record (its id links items back here)."""
         record = DumpRecord.create(text, source=source)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
-        except OSError as exc:
-            raise DumpLogError(f"Could not write dump log at {self.path}: {exc}") from exc
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+            except OSError as exc:
+                raise DumpLogError(f"Could not write dump log at {self.path}: {exc}") from exc
         return record
 
     def all(self) -> list[DumpRecord]:

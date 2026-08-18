@@ -36,6 +36,7 @@ from .promotion import (
 )
 from .registry import AgentRegistry, RegistryError
 from .scheduling import DEFAULT_TIME, build_plan
+from .server import DEFAULT_HOST, DEFAULT_PORT, JarvisAPI, serve
 from .storage import JSONStore, Store, StoreError
 
 
@@ -107,6 +108,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_sched = sub.add_parser("schedule", help="show how to run the briefing every morning")
     p_sched.add_argument("--at", default=DEFAULT_TIME, help=f"time of day, HH:MM (default {DEFAULT_TIME})")
+
+    p_serve = sub.add_parser("serve", help="open the command desk (chat dashboard) in your browser")
+    p_serve.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default {DEFAULT_PORT})")
+    p_serve.add_argument("--host", default=DEFAULT_HOST,
+                         help=f"bind address (default {DEFAULT_HOST}; loopback on purpose)")
+    p_serve.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
 
     return parser
 
@@ -289,6 +296,18 @@ def _cmd_schedule(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(store: Store, args: argparse.Namespace, registry: AgentRegistry,
+               log: DumpLog) -> int:
+    """Run the command desk. Blocks until Ctrl-C."""
+    serve(
+        host=args.host,
+        port=args.port,
+        api=JarvisAPI(store, registry, log),
+        open_browser=not args.no_browser,
+    )
+    return 0
+
+
 _HANDLERS = {
     "list": _cmd_list,
     "add": _cmd_add,
@@ -313,7 +332,7 @@ _LOG_HANDLERS = {
 }
 
 #: Commands that need the store, the registry, and the dump log together.
-_FULL_HANDLERS = {"brief": _cmd_brief}
+_FULL_HANDLERS = {"brief": _cmd_brief, "serve": _cmd_serve}
 
 
 def main(

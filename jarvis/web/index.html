@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JARVIS — Command Desk</title>
+<style>
+:root{
+  --bg:#03070d; --bg2:#050e18;
+  --cyan:#00e5ff; --cyan-2:#7ef0ff; --cyan-dim:#3d7f95;
+  --amber:#ffb020; --red:#ff4d5e; --green:#3ddc97;
+  --text:#c6ecf7; --dim:#5f8fa4; --faint:#33586a;
+  --line:rgba(0,229,255,.16); --line-2:rgba(0,229,255,.30);
+  --panel:rgba(6,18,29,.66);
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--mono);
+  font-size:13px; line-height:1.55; overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+/* ---------- ambient layers ---------- */
+.bg{position:fixed;inset:0;z-index:0;pointer-events:none}
+.bg::before{
+  content:"";position:absolute;inset:0;
+  background-image:linear-gradient(rgba(0,229,255,.055) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(0,229,255,.055) 1px,transparent 1px);
+  background-size:52px 52px;
+  mask-image:radial-gradient(ellipse 90% 75% at 50% 45%,#000 30%,transparent 100%);
+  -webkit-mask-image:radial-gradient(ellipse 90% 75% at 50% 45%,#000 30%,transparent 100%);
+}
+.bg::after{
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 50% 0%,rgba(0,140,190,.20),transparent 65%),
+             radial-gradient(ellipse 120% 90% at 50% 50%,transparent 55%,rgba(0,0,0,.85) 100%);
+}
+.scan{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(0,229,255,.032) 0 1px,transparent 1px 3px)}
+.sweep{position:fixed;left:0;right:0;height:180px;z-index:1;pointer-events:none;
+  background:linear-gradient(180deg,transparent,rgba(0,229,255,.05),transparent);
+  animation:sweep 7s linear infinite}
+@keyframes sweep{0%{top:-180px}100%{top:100%}}
+@media (prefers-reduced-motion: reduce){
+  .sweep,.spin-cw,.spin-ccw,.r-core,.dot.pulse{animation:none}
+}
+
+/* ---------- shell ---------- */
+.shell{position:relative;z-index:2;height:100%;display:flex;flex-direction:column}
+header{
+  display:flex;align-items:center;gap:18px;padding:11px 20px;
+  border-bottom:1px solid var(--line);background:rgba(3,9,15,.78);backdrop-filter:blur(7px)
+}
+.brand{display:flex;align-items:baseline;gap:11px}
+.brand h1{
+  font-size:17px;font-weight:700;letter-spacing:.42em;color:var(--cyan);
+  text-shadow:0 0 14px rgba(0,229,255,.65)
+}
+.brand .sub{font-size:9.5px;letter-spacing:.24em;color:var(--faint);text-transform:uppercase}
+.hdr-spacer{flex:1}
+.readout{display:flex;gap:18px;align-items:center;font-size:10px;letter-spacing:.13em;text-transform:uppercase}
+.readout .k{color:var(--faint)}
+.readout .v{color:var(--cyan-2)}
+.status{display:flex;align-items:center;gap:7px;color:var(--green)}
+.status.off{color:var(--red)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 9px currentColor}
+.dot.pulse{animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.28}}
+
+main{flex:1;display:grid;grid-template-columns:236px minmax(0,1fr) 348px;gap:14px;padding:14px;min-height:0}
+
+/* ---------- panels ---------- */
+.panel{
+  position:relative;background:var(--panel);border:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0;
+  clip-path:polygon(11px 0,100% 0,100% calc(100% - 11px),calc(100% - 11px) 100%,0 100%,0 11px);
+}
+.panel::before{
+  content:"";position:absolute;top:0;left:11px;right:0;height:1px;
+  background:linear-gradient(90deg,var(--line-2),transparent 60%)
+}
+.ptitle{
+  padding:9px 13px;font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--cyan-dim);border-bottom:1px solid var(--line);display:flex;
+  align-items:center;justify-content:space-between;flex-shrink:0;gap:9px
+}
+.ptitle .count{color:var(--cyan);font-size:10px}
+.pbody{overflow-y:auto;padding:11px 13px;flex:1;min-height:0}
+.pbody::-webkit-scrollbar,.feed::-webkit-scrollbar{width:7px}
+.pbody::-webkit-scrollbar-thumb,.feed::-webkit-scrollbar-thumb{background:rgba(0,229,255,.2)}
+.pbody::-webkit-scrollbar-track,.feed::-webkit-scrollbar-track{background:transparent}
+.tab{
+  background:none;border:none;color:var(--faint);font-family:var(--mono);cursor:pointer;
+  font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;padding:0
+}
+.tab.active{color:var(--cyan)}
+.tab:hover{color:var(--cyan-2)}
+.mini{
+  background:rgba(0,229,255,.07);border:1px solid var(--line);color:var(--cyan-dim);
+  font-family:var(--mono);cursor:pointer;font-size:8.5px;letter-spacing:.16em;
+  text-transform:uppercase;padding:3px 8px;transition:.16s
+}
+.mini:hover{color:var(--cyan);border-color:var(--line-2)}
+
+/* ---------- left rail ---------- */
+.rail{display:flex;flex-direction:column;gap:14px;min-height:0}
+.reactor{display:flex;flex-direction:column;align-items:center;padding:17px 0 13px;flex-shrink:0}
+.reactor svg{filter:drop-shadow(0 0 13px rgba(0,229,255,.55))}
+.r-ring{transform-origin:60px 60px}
+.spin-cw{animation:spin 15s linear infinite}
+.spin-ccw{animation:spin 22s linear infinite reverse}
+@keyframes spin{to{transform:rotate(360deg)}}
+.r-core{animation:corepulse 2.7s ease-in-out infinite}
+@keyframes corepulse{0%,100%{opacity:.95}50%{opacity:.45}}
+.reactor .label{margin-top:9px;font-size:9px;letter-spacing:.28em;color:var(--faint);text-transform:uppercase}
+
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);flex-shrink:0}
+.stat{background:rgba(4,13,22,.9);padding:9px 11px}
+.stat .n{font-size:20px;font-weight:700;color:var(--cyan);line-height:1.15;text-shadow:0 0 11px rgba(0,229,255,.4)}
+.stat .n.warn{color:var(--amber);text-shadow:0 0 11px rgba(255,176,32,.4)}
+.stat .l{font-size:8.5px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase;margin-top:2px}
+
+.agent{
+  display:flex;align-items:center;gap:9px;padding:5px 0;font-size:11px;
+  border-bottom:1px solid rgba(0,229,255,.06);cursor:default
+}
+.agent:last-child{border-bottom:0}
+.agent .adot{width:5px;height:5px;border-radius:50%;background:var(--faint);flex-shrink:0;transition:.25s}
+.agent.live .adot{background:var(--cyan);box-shadow:0 0 10px var(--cyan);animation:pulse 1s infinite}
+.agent.used .adot{background:var(--green);box-shadow:0 0 7px var(--green)}
+.agent .an{color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent.live .an,.agent.used .an{color:var(--text)}
+.agent .ad{font-size:8.5px;color:var(--faint);letter-spacing:.1em}
+
+/* ---------- chat ---------- */
+.chat{display:flex;flex-direction:column;min-height:0}
+.feed{flex:1;overflow-y:auto;padding:17px 20px;display:flex;flex-direction:column;gap:11px;min-height:0}
+.boot{color:var(--cyan-dim);font-size:11px;line-height:1.9}
+.boot .ok{color:var(--green)}
+.boot .hi{color:var(--cyan);text-shadow:0 0 10px rgba(0,229,255,.4)}
+
+.msg{max-width:min(760px,94%);animation:rise .22s ease-out}
+@keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.msg.user{align-self:flex-end}
+.msg.user .bubble{
+  background:rgba(0,229,255,.09);border:1px solid var(--line-2);
+  padding:8px 13px;color:var(--cyan-2);white-space:pre-wrap;word-break:break-word;
+  clip-path:polygon(9px 0,100% 0,100% 100%,0 100%,0 9px)
+}
+.msg.jarvis .who{
+  font-size:9px;letter-spacing:.24em;color:var(--cyan-dim);text-transform:uppercase;margin-bottom:4px
+}
+.msg.jarvis .body{word-break:break-word;color:var(--text)}
+.msg.sub{border-left:2px solid var(--line-2);padding-left:13px;margin-left:5px}
+.msg.sub .who{color:var(--amber)}
+
+/* markdown inside bubbles and the file viewer */
+.body p,.vbody p{margin:0 0 8px}
+.body p:last-child,.vbody p:last-child{margin-bottom:0}
+.body h3,.body h4,.body h5,.body h6,.vbody h3,.vbody h4,.vbody h5,.vbody h6{
+  color:var(--cyan-2);margin:11px 0 6px;font-size:12.5px;letter-spacing:.06em;text-transform:uppercase}
+.body ul,.body ol,.vbody ul,.vbody ol{margin:0 0 8px;padding-left:22px}
+.body li,.vbody li{margin:2px 0}
+.body code,.vbody code{
+  background:rgba(0,229,255,.09);border:1px solid var(--line);padding:0 4px;
+  font-size:12px;color:var(--cyan-2)}
+.body pre,.vbody pre{
+  background:rgba(0,16,26,.8);border:1px solid var(--line);padding:9px 12px;
+  overflow-x:auto;margin:0 0 8px}
+.body pre code,.vbody pre code{background:none;border:none;padding:0;color:var(--text)}
+.body a,.vbody a{color:var(--cyan);text-decoration:none;border-bottom:1px solid var(--cyan-dim)}
+.body a:hover,.vbody a:hover{color:var(--cyan-2)}
+.body blockquote,.vbody blockquote{
+  border-left:2px solid var(--line-2);padding-left:11px;color:var(--dim);margin:0 0 8px}
+.body hr,.vbody hr{border:none;border-top:1px solid var(--line);margin:10px 0}
+.body strong,.vbody strong{color:var(--cyan-2)}
+
+.line{display:flex;align-items:baseline;gap:9px;font-size:10.5px;color:var(--faint);animation:rise .2s}
+.line .arrow{color:var(--cyan-dim)}
+.line .nm{color:var(--cyan-dim);letter-spacing:.09em}
+.line .dt{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.line.file .nm{color:var(--dim)}
+
+.deleg{
+  display:flex;align-items:center;gap:11px;padding:7px 13px;
+  border:1px solid rgba(255,176,32,.3);background:rgba(255,176,32,.06);
+  font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--amber);
+  clip-path:polygon(8px 0,100% 0,100% 100%,0 100%,0 8px);animation:rise .22s
+}
+.deleg .tsk{color:var(--dim);text-transform:none;letter-spacing:0;font-size:10.5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.result{display:flex;gap:20px;padding:7px 0;border-top:1px solid var(--line);
+  font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);flex-wrap:wrap}
+.result b{color:var(--cyan);font-weight:600}
+.err{border:1px solid rgba(255,77,94,.4);background:rgba(255,77,94,.08);
+  color:var(--red);padding:8px 13px;font-size:11.5px}
+.warnline{color:var(--amber);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase}
+.divider{display:flex;align-items:center;gap:11px;color:var(--faint);font-size:9px;
+  letter-spacing:.24em;text-transform:uppercase}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+
+.thinking{display:flex;align-items:center;gap:9px;color:var(--cyan-dim);font-size:10.5px;
+  letter-spacing:.18em;text-transform:uppercase}
+.thinking i{width:5px;height:5px;border-radius:50%;background:var(--cyan);
+  box-shadow:0 0 9px var(--cyan);animation:bounce 1.25s infinite}
+.thinking i:nth-child(2){animation-delay:.16s}
+.thinking i:nth-child(3){animation-delay:.32s}
+@keyframes bounce{0%,80%,100%{opacity:.22}40%{opacity:1}}
+
+.composer{border-top:1px solid var(--line);padding:11px 14px;background:rgba(3,10,17,.6);flex-shrink:0}
+.cwrap{display:flex;gap:10px;align-items:flex-end}
+textarea{
+  flex:1;background:rgba(0,20,32,.6);border:1px solid var(--line);color:var(--text);
+  font-family:var(--mono);font-size:13px;padding:9px 12px;resize:none;outline:none;
+  min-height:40px;max-height:170px;line-height:1.5
+}
+textarea:focus{border-color:var(--line-2);box-shadow:0 0 0 1px rgba(0,229,255,.14),inset 0 0 22px rgba(0,229,255,.05)}
+textarea::placeholder{color:var(--faint)}
+button{font-family:var(--mono);cursor:pointer}
+.primary{
+  background:rgba(0,229,255,.11);border:1px solid var(--line-2);color:var(--cyan);
+  padding:11px 19px;font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;
+  transition:.16s;white-space:nowrap
+}
+.primary:hover:not(:disabled){background:rgba(0,229,255,.22);box-shadow:0 0 17px rgba(0,229,255,.28)}
+.primary:disabled{opacity:.35;cursor:not-allowed}
+.hint{margin-top:6px;font-size:9px;color:var(--faint);letter-spacing:.11em}
+
+/* ---------- quick add ---------- */
+.qa{display:flex;gap:5px;padding:9px 13px;border-bottom:1px solid var(--line);flex-shrink:0}
+.qa input[type=text]{
+  flex:1;min-width:0;background:rgba(0,20,32,.6);border:1px solid var(--line);
+  color:var(--text);font-family:var(--mono);font-size:11px;padding:6px 9px;outline:none}
+.qa input[type=text]:focus{border-color:var(--line-2)}
+.qa input[type=text]::placeholder{color:var(--faint)}
+.qa input[type=date],.qa select{
+  background:rgba(0,20,32,.6);border:1px solid var(--line);color:var(--dim);
+  font-family:var(--mono);font-size:10px;padding:5px 4px;outline:none;
+  color-scheme:dark;max-width:118px}
+.qa .add{
+  background:rgba(0,229,255,.11);border:1px solid var(--line-2);color:var(--cyan);
+  padding:5px 11px;font-size:12px;transition:.16s}
+.qa .add:hover{background:rgba(0,229,255,.22)}
+
+.notice{
+  padding:6px 13px;font-size:10px;letter-spacing:.11em;color:var(--amber);
+  border-bottom:1px solid rgba(255,176,32,.25);background:rgba(255,176,32,.05);
+  animation:rise .2s}
+
+/* ---------- plate ---------- */
+.grp{margin-bottom:15px}
+.grp:last-child{margin-bottom:0}
+.ghead{font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--faint);
+  margin-bottom:7px;display:flex;justify-content:space-between;align-items:center}
+.ghead.od{color:var(--red)} .ghead.td{color:var(--amber)}
+.item{
+  border-left:2px solid var(--line);padding:8px 10px 8px 11px;margin-bottom:8px;
+  background:rgba(0,229,255,.02);transition:.16s
+}
+.item:hover{border-left-color:var(--cyan);background:rgba(0,229,255,.06)}
+.item.od{border-left-color:var(--red)} .item.td{border-left-color:var(--amber)}
+.item.done{opacity:.45}
+.item.done .t{text-decoration:line-through}
+/* Full width for the title: the actions live on their own row below, so a long
+   title wraps freely instead of running underneath the buttons. */
+.item .t{font-size:11.5px;color:var(--text);line-height:1.45;overflow-wrap:anywhere}
+.item .m{font-size:8.5px;color:var(--faint);letter-spacing:.09em;text-transform:uppercase;margin-top:4px}
+.item .foot{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-top:6px}
+.item .foot .m{margin-top:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .acts{display:flex;gap:5px;flex-shrink:0;opacity:.4;transition:opacity .16s}
+.item:hover .acts{opacity:1}
+.acts button{
+  background:rgba(0,229,255,.11);border:1px solid var(--line-2);color:var(--cyan);
+  padding:3px 9px;font-size:9px;letter-spacing:.1em;text-transform:uppercase;transition:.16s}
+.acts button:hover{background:rgba(0,229,255,.22)}
+.acts .rm{border-color:rgba(255,77,94,.35);color:var(--red);background:rgba(255,77,94,.08)}
+.acts .rm:hover{background:rgba(255,77,94,.2);box-shadow:0 0 12px rgba(255,77,94,.25)}
+.acts .rm.armed{background:rgba(255,77,94,.3);color:#fff;box-shadow:0 0 12px rgba(255,77,94,.4)}
+.empty{color:var(--faint);font-size:10.5px;letter-spacing:.09em;padding:5px 0}
+.cand{border:1px solid rgba(255,176,32,.25);background:rgba(255,176,32,.05);
+  padding:6px 9px;margin-bottom:6px;font-size:10.5px;color:var(--amber)}
+.cand span{color:var(--faint);font-size:9px}
+
+/* ---------- files ---------- */
+.frow{
+  display:flex;align-items:baseline;gap:9px;padding:7px 9px;margin-bottom:6px;
+  border-left:2px solid var(--line);background:rgba(0,229,255,.02);cursor:pointer;transition:.16s
+}
+.frow:hover{border-left-color:var(--cyan);background:rgba(0,229,255,.06)}
+.frow .fn{color:var(--text);font-size:11.5px;flex:1;overflow-wrap:anywhere}
+.frow .fm{color:var(--faint);font-size:8.5px;letter-spacing:.09em;white-space:nowrap}
+
+/* ---------- file viewer overlay ---------- */
+.viewer{
+  position:fixed;inset:34px;z-index:60;background:rgba(3,10,17,.97);
+  border:1px solid var(--line-2);display:none;flex-direction:column;
+  clip-path:polygon(13px 0,100% 0,100% calc(100% - 13px),calc(100% - 13px) 100%,0 100%,0 13px);
+  box-shadow:0 0 60px rgba(0,229,255,.15)
+}
+.viewer.open{display:flex}
+.vtitle{
+  display:flex;align-items:center;justify-content:space-between;gap:13px;
+  padding:11px 17px;border-bottom:1px solid var(--line);
+  font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan)}
+.vbody{flex:1;overflow-y:auto;padding:17px 22px;font-size:12.5px}
+.vbody pre{white-space:pre-wrap}
+
+@media(max-width:1080px){
+  main{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr) auto;overflow-y:auto}
+  .rail{flex-direction:row;flex-wrap:wrap}
+  .rail .panel{flex:1;min-width:210px}
+  .chat{min-height:60vh}
+}
+</style>
+</head>
+<body>
+<div class="bg"></div><div class="scan"></div><div class="sweep"></div>
+
+<div class="shell">
+  <header>
+    <div class="brand">
+      <h1>JARVIS</h1>
+      <div class="sub">Command Desk</div>
+    </div>
+    <div class="hdr-spacer"></div>
+    <div class="readout">
+      <div><span class="k">Plate</span> <span class="v" id="rd-active">—</span></div>
+      <div><span class="k">Due</span> <span class="v" id="rd-due">—</span></div>
+      <div><span class="k">Session</span> <span class="v" id="rd-cost">$0.0000</span></div>
+      <div><span class="k">Month</span> <span class="v" id="rd-month">$0.00</span></div>
+      <div><span class="k" id="clock">--:--:--</span></div>
+      <div class="status" id="sysstat"><span class="dot pulse"></span><span id="sysstat-t">Online</span></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- LEFT -->
+    <div class="rail">
+      <div class="panel">
+        <div class="reactor">
+          <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true">
+            <circle cx="60" cy="60" r="52" fill="none" stroke="rgba(0,229,255,.13)" stroke-width="1"/>
+            <g class="r-ring spin-cw">
+              <circle cx="60" cy="60" r="45" fill="none" stroke="rgba(0,229,255,.5)"
+                      stroke-width="1.5" stroke-dasharray="26 13"/>
+            </g>
+            <g class="r-ring spin-ccw">
+              <circle cx="60" cy="60" r="36" fill="none" stroke="rgba(0,229,255,.35)"
+                      stroke-width="1" stroke-dasharray="6 10"/>
+            </g>
+            <circle cx="60" cy="60" r="27" fill="none" stroke="rgba(0,229,255,.55)" stroke-width="1.5"/>
+            <g stroke="rgba(0,229,255,.4)" stroke-width="1">
+              <line x1="60" y1="33" x2="60" y2="24"/><line x1="60" y1="87" x2="60" y2="96"/>
+              <line x1="33" y1="60" x2="24" y2="60"/><line x1="87" y1="60" x2="96" y2="60"/>
+            </g>
+            <circle class="r-core" cx="60" cy="60" r="18" fill="rgba(0,229,255,.16)"/>
+            <circle class="r-core" cx="60" cy="60" r="10" fill="rgba(126,240,255,.85)"/>
+          </svg>
+          <div class="label">Systems Nominal</div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="n" id="s-active">0</div><div class="l">On Plate</div></div>
+          <div class="stat"><div class="n warn" id="s-overdue">0</div><div class="l">Overdue</div></div>
+          <div class="stat"><div class="n" id="s-today">0</div><div class="l">Due Today</div></div>
+          <div class="stat"><div class="n" id="s-done">0</div><div class="l">Completed</div></div>
+        </div>
+      </div>
+      <div class="panel" style="flex:1">
+        <div class="ptitle"><span>Specialists</span><span class="count" id="ag-count">0</span></div>
+        <div class="pbody" id="agents"></div>
+      </div>
+    </div>
+
+    <!-- CENTER -->
+    <div class="panel chat">
+      <div class="ptitle">
+        <span>Conversation</span>
+        <span style="display:flex;gap:9px;align-items:center">
+          <span class="count" id="feed-stat">Standing by</span>
+          <button class="mini" id="new-session" aria-label="Start a new conversation">New Session</button>
+        </span>
+      </div>
+      <div class="feed" id="feed" role="log" aria-live="polite"></div>
+      <div class="composer">
+        <div class="cwrap">
+          <textarea id="input" rows="1" placeholder="Dump whatever's on your mind…"
+                    aria-label="Message to Jarvis"></textarea>
+          <button id="send" class="primary">Transmit</button>
+        </div>
+        <div class="hint">Enter to send · Shift+Enter for a new line · captured before anything runs</div>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="panel">
+      <div class="ptitle">
+        <span style="display:flex;gap:14px">
+          <button class="tab active" data-tab="plate">The Plate</button>
+          <button class="tab" data-tab="files">Files</button>
+        </span>
+        <span class="count" id="pl-count">0</span>
+      </div>
+      <form class="qa" id="qa" data-pane="plate">
+        <input type="text" id="qa-text" placeholder='Quick add… ("book room #club")'
+               aria-label="Quick add item" autocomplete="off">
+        <input type="date" id="qa-due" aria-label="Due date">
+        <select id="qa-kind" aria-label="Kind">
+          <option value="task">task</option>
+          <option value="project">project</option>
+          <option value="reminder">reminder</option>
+        </select>
+        <button type="submit" class="add" aria-label="Add item">+</button>
+      </form>
+      <div id="notice-slot"></div>
+      <div class="pbody" id="plate" data-pane="plate"></div>
+      <div class="pbody" id="files" data-pane="files" style="display:none"></div>
+    </div>
+  </main>
+</div>
+
+<!-- file viewer -->
+<div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="Draft viewer">
+  <div class="vtitle">
+    <span id="v-name"></span>
+    <button class="mini" id="v-close" aria-label="Close viewer">Close</button>
+  </div>
+  <div class="vbody" id="v-body"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const feed = $('#feed'), input = $('#input'), sendBtn = $('#send');
+let sessionCost = 0, busy = false, state = null;
+
+/* ---------- clock ---------- */
+setInterval(() => {
+  $('#clock').textContent = new Date().toLocaleTimeString('en-GB');
+}, 1000);
+
+/* ---------- helpers ---------- */
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const atBottom = () => feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
+const scroll = () => { feed.scrollTop = feed.scrollHeight; };
+
+function add(html, cls) {
+  const stick = atBottom();
+  const el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.innerHTML = html;
+  feed.appendChild(el);
+  if (stick) scroll();
+  return el;
+}
+
+function setOnline(ok) {
+  const el = $('#sysstat');
+  el.classList.toggle('off', !ok);
+  $('#sysstat-t').textContent = ok ? 'Online' : 'Offline';
+}
+
+let noticeTimer = null;
+function notice(text) {
+  const slot = $('#notice-slot');
+  slot.innerHTML = `<div class="notice">${esc(text)}</div>`;
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { slot.innerHTML = ''; }, 3200);
+}
+
+async function post(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || ('request failed: ' + res.status));
+  }
+  return res.json();
+}
+
+/* ---------- markdown (escape-first, minimal, safe) ---------- */
+function mdInline(t) {
+  return t
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(])\*([^*\s][^*]*?)\*(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+             '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+function md(src) {
+  const codes = [];
+  let text = esc(src).replace(/```\w*\n?([\s\S]*?)```/g, (m, body) => {
+    codes.push(body);
+    return '@@CB' + (codes.length - 1) + '@@';
+  });
+  const out = [];
+  let list = null;
+  const closeList = () => { if (list) { out.push('</' + list + '>'); list = null; } };
+  for (const line of text.split('\n')) {
+    let m;
+    if ((m = line.match(/^@@CB(\d+)@@\s*$/))) {
+      closeList(); out.push('<pre><code>' + codes[+m[1]] + '</code></pre>'); continue;
+    }
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+      closeList(); const lvl = Math.min(m[1].length + 2, 6);
+      out.push(`<h${lvl}>` + mdInline(m[2]) + `</h${lvl}>`); continue;
+    }
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { closeList(); out.push('<hr>'); continue; }
+    if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; }
+      out.push('<li>' + mdInline(m[1]) + '</li>'); continue;
+    }
+    if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+      if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; }
+      out.push('<li>' + mdInline(m[1]) + '</li>'); continue;
+    }
+    if ((m = line.match(/^&gt;\s?(.*)$/))) {
+      closeList(); out.push('<blockquote>' + mdInline(m[1]) + '</blockquote>'); continue;
+    }
+    if (!line.trim()) { closeList(); continue; }
+    closeList(); out.push('<p>' + mdInline(line) + '</p>');
+  }
+  closeList();
+  return out.join('');
+}
+
+/* ---------- boot ---------- */
+function boot() {
+  const lines = [
+    ['Initializing Jarvis command desk', 'ok'],
+    ['Memory spine linked — data/plate.json', 'ok'],
+    ['Specialist roster loaded', 'ok'],
+    ['Orchestrator standing by', 'ok'],
+  ];
+  const el = add('', 'boot');
+  let i = 0;
+  (function step() {
+    if (i >= lines.length) {
+      el.innerHTML += `<div class="hi" style="margin-top:9px">Good to see you. What's on your mind?</div>`;
+      scroll(); return;
+    }
+    const [t, c] = lines[i++];
+    el.innerHTML += `<div><span class="${c}">[ OK ]</span> ${esc(t)}</div>`;
+    scroll(); setTimeout(step, 170);
+  })();
+}
+
+/* ---------- state / plate ---------- */
+let stateSeq = 0;   // sequences loads so a stale response can't clobber a fresh one
+async function loadState() {
+  const seq = ++stateSeq;
+  try {
+    const res = await fetch('/api/state');
+    if (!res.ok) throw new Error('state ' + res.status);
+    const data = await res.json();
+    if (seq !== stateSeq) return;   // a newer load already landed
+    state = data;
+    renderStats(); renderAgents(); renderPlate();
+    $('#rd-month').textContent = '$' + (state.costs?.month ?? 0).toFixed(2);
+    setOnline(true);
+  } catch (e) {
+    if (seq === stateSeq) setOnline(false);
+  }
+}
+
+function renderStats() {
+  const s = state.stats;
+  $('#s-active').textContent  = s.active;
+  $('#s-overdue').textContent = s.overdue;
+  $('#s-today').textContent   = s.today;
+  $('#s-done').textContent    = s.done;
+  $('#rd-active').textContent = s.active;
+  $('#rd-due').textContent    = s.overdue + s.today;
+  $('#pl-count').textContent  = s.active;
+}
+
+/* Status lights live in this map so a re-render can't wipe them mid-run. */
+const agentStatus = new Map();
+function renderAgents() {
+  $('#ag-count').textContent = state.agents.length;
+  $('#agents').innerHTML = state.agents.map(a => `
+    <div class="agent ${agentStatus.get(a.name) || ''}" data-agent="${esc(a.name)}">
+      <span class="adot"></span>
+      <span class="an" title="${esc(a.description)}">${esc(a.name)}</span>
+      <span class="ad">${a.domain ? esc(a.domain) : (a.origin === 'custom' ? 'custom' : '')}</span>
+    </div>`).join('');
+}
+function light(name, cls) {
+  agentStatus.set(name, cls);
+  const el = document.querySelector(`.agent[data-agent="${CSS.escape(name)}"]`);
+  if (el) { el.classList.remove('live', 'used'); el.classList.add(cls); }
+}
+function clearLive() {
+  for (const [name, cls] of agentStatus) if (cls === 'live') agentStatus.set(name, 'used');
+  document.querySelectorAll('.agent.live').forEach(e => {
+    e.classList.remove('live'); e.classList.add('used');
+  });
+}
+
+function itemHTML(it, cls) {
+  const bits = [it.kind, it.domain].filter(Boolean).join(' / ');
+  const due  = it.due ? ' · due ' + it.due : '';
+  const done = it.status === 'done';
+  return `<div class="item ${cls || ''} ${done ? 'done' : ''}">
+    <div class="t">${esc(it.title)}</div>
+    <div class="foot">
+      <span class="m" title="${esc(bits)}${esc(due)}">${esc(bits)}${esc(due)}</span>
+      <span class="acts">
+        ${done
+          ? `<button data-act="reopen" data-id="${esc(it.id)}">Undo</button>`
+          : `<button data-act="done" data-id="${esc(it.id)}">Done</button>`}
+        <button class="rm" data-act="remove" data-id="${esc(it.id)}">Del</button>
+      </span>
+    </div>
+  </div>`;
+}
+
+function group(title, items, cls) {
+  if (!items.length) return '';
+  return `<div class="grp">
+    <div class="ghead ${cls || ''}"><span>${title}</span><span>${items.length}</span></div>
+    ${items.map(i => itemHTML(i, cls)).join('')}
+  </div>`;
+}
+
+function renderPlate() {
+  const a = state.agenda;
+  const dated = new Set([...a.overdue, ...a.today, ...a.upcoming].map(i => i.id));
+  const rest  = state.items.filter(i => i.status !== 'done' && !dated.has(i.id));
+
+  let html = group('Overdue', a.overdue, 'od')
+           + group('Today', a.today, 'td')
+           + group('Upcoming', a.upcoming, '')
+           + group('No date', rest, '');
+
+  if (state.candidates.length) {
+    html += `<div class="grp"><div class="ghead"><span>Keeps coming up</span></div>` +
+      state.candidates.map(c => `<div class="cand">${esc(c.domain)}
+        <span>· ${c.count} items · no specialist</span></div>`).join('') + `</div>`;
+  }
+  if (state.unsorted_dumps.length) {
+    html += `<div class="grp"><div class="ghead"><span>Captured, not sorted</span>
+      <span>${state.unsorted_dumps.length}</span></div>` +
+      state.unsorted_dumps.map(d => `<div class="item"><div class="t">${esc(d.summary)}</div>
+        <div class="m">dump ${esc(d.id)}</div></div>`).join('') + `</div>`;
+  }
+  $('#plate').innerHTML = html || '<div class="empty">Plate is clear.</div>';
+}
+
+/* One delegated listener; delete requires a second click to confirm. */
+$('#plate').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const { act: action, id } = btn.dataset;
+  if (action === 'remove' && !btn.classList.contains('armed')) {
+    btn.classList.add('armed');
+    btn.textContent = 'Sure?';
+    setTimeout(() => { btn.classList.remove('armed'); btn.textContent = 'Del'; }, 3000);
+    return;
+  }
+  try {
+    await post(`/api/items/${encodeURIComponent(id)}/${action}`);
+  } catch (err) {
+    notice(err.message);
+  }
+  loadState();
+});
+
+/* ---------- quick add ---------- */
+$('#qa').addEventListener('submit', async e => {
+  e.preventDefault();
+  let text = $('#qa-text').value.trim();
+  if (!text) return;
+  let domain = 'other';
+  text = text.replace(/(^|\s)#([a-z0-9_-]+)\b/i, (m, sp, d) => { domain = d.toLowerCase(); return sp; }).trim();
+  try {
+    await post('/api/items', {
+      text,
+      domain,
+      kind: $('#qa-kind').value,
+      due: $('#qa-due').value || null,
+    });
+    $('#qa-text').value = ''; $('#qa-due').value = '';
+    loadState();
+  } catch (err) {
+    notice(err.message);
+  }
+});
+
+/* ---------- files tab ---------- */
+function setTab(which) {
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === which));
+  document.querySelectorAll('[data-pane]').forEach(p =>
+    p.style.display = p.dataset.pane === which ? '' : 'none');
+  if (which === 'files') loadFiles();
+}
+document.querySelectorAll('.tab').forEach(t =>
+  t.addEventListener('click', () => setTab(t.dataset.tab)));
+
+async function loadFiles() {
+  try {
+    const res = await fetch('/api/scratch');
+    if (!res.ok) throw new Error('scratch ' + res.status);
+    const { files } = await res.json();
+    $('#files').innerHTML = files.length
+      ? files.map(f => `<div class="frow" data-file="${esc(f.name)}" role="button" tabindex="0">
+          <span class="fn">${esc(f.name)}</span>
+          <span class="fm">${(f.size / 1024).toFixed(1)}k · ${esc(f.modified.slice(0, 10))}</span>
+        </div>`).join('')
+      : '<div class="empty">No drafts yet. Specialists write their work here.</div>';
+  } catch (e) {
+    $('#files').innerHTML = '<div class="empty">Could not read scratch/.</div>';
+  }
+}
+$('#files').addEventListener('click', e => {
+  const row = e.target.closest('.frow');
+  if (row) openFile(row.dataset.file);
+});
+$('#files').addEventListener('keydown', e => {
+  const row = e.target.closest('.frow');
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openFile(row.dataset.file); }
+});
+
+async function openFile(name) {
+  try {
+    const res = await fetch('/api/scratch/' + encodeURIComponent(name));
+    if (!res.ok) throw new Error('could not open ' + name);
+    const file = await res.json();
+    $('#v-name').textContent = file.name;
+    $('#v-body').innerHTML = /\.(md|markdown|txt)$/i.test(file.name)
+      ? md(file.content)
+      : '<pre><code>' + esc(file.content) + '</code></pre>';
+    $('#viewer').classList.add('open');
+    $('#v-close').focus();
+  } catch (err) {
+    notice(err.message);
+  }
+}
+$('#v-close').addEventListener('click', () => $('#viewer').classList.remove('open'));
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('#viewer').classList.remove('open');
+});
+
+/* ---------- session ---------- */
+$('#new-session').addEventListener('click', async () => {
+  if (busy) { notice('Wait for the current run to finish.'); return; }
+  try {
+    await post('/api/session/reset');
+    add('<span>New conversation</span>', 'divider');
+    scroll();
+  } catch (err) {
+    notice(err.message);
+  }
+});
+
+/* ---------- chat ---------- */
+const TOOL_LABEL = {
+  capture_thought: 'captured', add_reminder: 'reminder set', complete_item: 'marked done',
+  list_plate: 'reading plate', agenda: 'checking agenda',
+  propose_agents: 'scanning for gaps', create_agent: 'creating specialist',
+};
+
+let liveMsg = null, liveRaw = '', liveAgent = undefined, thinkEl = null, dirty = false;
+
+function dropThinking() { if (thinkEl) { thinkEl.remove(); thinkEl = null; } }
+
+function onEvent(ev) {
+  switch (ev.type) {
+    case 'dump':
+      add(`<div class="line"><span class="arrow">OK</span>
+        <span class="nm">dump ${esc(ev.id)} saved verbatim</span></div>`);
+      dirty = true;
+      break;
+
+    case 'session':
+      break;  // continuity is the default; the New Session button is the exception
+
+    case 'text': {
+      dropThinking();
+      // Keep consecutive text from one speaker in a single bubble.
+      if (!liveMsg || liveAgent !== ev.agent) {
+        const who = ev.agent ? esc(ev.agent) + ' specialist' : 'Jarvis';
+        liveMsg = add(`<div class="who">${who}</div><div class="body"></div>`,
+                      'msg jarvis' + (ev.agent ? ' sub' : ''));
+        liveAgent = ev.agent;
+        liveRaw = '';
+      }
+      liveRaw += (liveRaw ? '\n\n' : '') + ev.text;
+      liveMsg.querySelector('.body').innerHTML = md(liveRaw);
+      if (atBottom()) scroll();
+      break;
+    }
+
+    case 'tool': {
+      dropThinking(); liveMsg = null;
+      const label = TOOL_LABEL[ev.tool] || ev.tool;
+      const cls = ev.scope === 'file' ? 'line file' : 'line';
+      add(`<div class="${cls}"><span class="arrow">&#9656;</span>
+        <span class="nm">${esc(label)}</span>
+        <span class="dt">${esc(ev.detail || '')}</span></div>`);
+      if (ev.mutates) dirty = true;
+      break;
+    }
+
+    case 'delegate':
+      dropThinking(); liveMsg = null;
+      add(`<div class="deleg"><span>&#9670; Delegating &rarr; ${esc(ev.agent)}</span>
+        <span class="tsk">${esc(ev.task || '')}</span></div>`);
+      light(ev.agent, 'live');
+      break;
+
+    case 'result': {
+      if (typeof ev.cost === 'number') sessionCost += ev.cost;
+      $('#rd-cost').textContent = '$' + sessionCost.toFixed(4);
+      if (typeof ev.month_cost === 'number')
+        $('#rd-month').textContent = '$' + ev.month_cost.toFixed(2);
+      add(`<div class="result">
+        <span>Run <b>$${(ev.cost || 0).toFixed(4)}</b></span>
+        <span>Turns <b>${ev.turns ?? '&mdash;'}</b></span>
+        <span>Elapsed <b>${((ev.duration_ms || 0) / 1000).toFixed(1)}s</b></span>
+      </div>`);
+      if (ev.stopped && (ev.is_error || /budget|turn|max/i.test(ev.stopped)))
+        add(`<div class="warnline">Run stopped early: ${esc(ev.stopped)}</div>`);
+      break;
+    }
+
+    case 'error':
+      dropThinking(); liveMsg = null;
+      add(esc(ev.message), 'err');
+      break;
+
+    case 'end':
+      dropThinking(); liveMsg = null; liveAgent = undefined;
+      clearLive();
+      break;
+  }
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text || busy) return;
+  busy = true; sendBtn.disabled = true; dirty = false;
+  input.value = ''; input.style.height = 'auto';
+  $('#feed-stat').textContent = 'Working';
+
+  add(`<div class="bubble">${esc(text)}</div>`, 'msg user');
+  thinkEl = add('<i></i><i></i><i></i><span>Processing</span>', 'thinking');
+  scroll();
+
+  // Refresh the plate periodically while the run is in flight, so items appear
+  // as they're captured rather than all at once when the run finishes.
+  const ticker = setInterval(() => { if (dirty) { dirty = false; loadState(); } }, 1200);
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res.ok || !res.body) throw new Error('server returned ' + res.status);
+
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    const handleFrame = frame => {
+      if (frame.startsWith('data: ')) {
+        try { onEvent(JSON.parse(frame.slice(6))); } catch (_) {}
+      }
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        handleFrame(buf.slice(0, i)); buf = buf.slice(i + 2);
+      }
+    }
+    buf += dec.decode();          // flush any buffered multi-byte tail
+    if (buf.trim()) handleFrame(buf.trim());
+  } catch (e) {
+    dropThinking();
+    add('Connection to Jarvis failed: ' + esc(e.message), 'err');
+  } finally {
+    clearInterval(ticker);
+    dropThinking(); clearLive();
+    busy = false; sendBtn.disabled = false;
+    $('#feed-stat').textContent = 'Standing by';
+    loadState(); loadFiles(); input.focus();
+  }
+}
+
+/* ---------- input ---------- */
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 170) + 'px';
+});
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+    e.preventDefault(); send();
+  }
+});
+sendBtn.addEventListener('click', send);
+
+window.addEventListener('beforeunload', e => {
+  if (busy) { e.preventDefault(); e.returnValue = ''; }
+});
+
+boot();
+loadState();
+loadFiles();
+setInterval(() => { if (!busy) loadState(); }, 15000);
+input.focus();
+</script>
+</body>
+</html>
