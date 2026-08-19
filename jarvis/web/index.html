@@ -181,6 +181,15 @@ main{flex:1;display:grid;grid-template-columns:236px minmax(0,1fr) 348px;gap:14p
 .line .nm{color:var(--cyan-dim);letter-spacing:.09em}
 .line .dt{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .line.file .nm{color:var(--dim)}
+/* A file a specialist just wrote — clickable, opens on the desk. */
+.line.wrote{cursor:pointer;border:1px solid rgba(0,229,255,.18);padding:5px 10px;
+  background:rgba(0,229,255,.03);transition:.16s;outline:none}
+.line.wrote:hover,.line.wrote:focus-visible{border-color:var(--line-2);background:rgba(0,229,255,.09)}
+.line.wrote .dt{color:var(--cyan-2);flex:initial;overflow-wrap:anywhere;white-space:normal}
+.line.wrote .open{margin-left:auto;color:var(--cyan-dim);font-size:9px;
+  letter-spacing:.16em;text-transform:uppercase;white-space:nowrap}
+.line.wrote:hover .open,.line.wrote:focus-visible .open{color:var(--cyan)}
+.tabcount{color:var(--cyan);font-size:9px;margin-left:4px}
 
 .deleg{
   display:flex;align-items:center;gap:11px;padding:7px 13px;
@@ -398,9 +407,12 @@ button{font-family:var(--mono);cursor:pointer}
       <div class="ptitle">
         <span style="display:flex;gap:14px">
           <button class="tab active" data-tab="plate">The Plate</button>
-          <button class="tab" data-tab="files">Files</button>
+          <button class="tab" data-tab="files">Files<span class="tabcount" id="files-count"></span></button>
         </span>
-        <span class="count" id="pl-count">0</span>
+        <span style="display:flex;gap:9px;align-items:center">
+          <button class="mini" id="canvas-sync" title="Import upcoming Canvas assignments">Sync Canvas</button>
+          <span class="count" id="pl-count">0</span>
+        </span>
       </div>
       <form class="qa" id="qa" data-pane="plate">
         <input type="text" id="qa-text" placeholder='Quick add… ("book room #club")'
@@ -713,10 +725,21 @@ async function loadFiles() {
           <span class="fm">${(f.size / 1024).toFixed(1)}k · ${esc(f.modified.slice(0, 10))}</span>
         </div>`).join('')
       : '<div class="empty">No drafts yet. Specialists write their work here.</div>';
+    $('#files-count').textContent = files.length ? files.length : '';
   } catch (e) {
     $('#files').innerHTML = '<div class="empty">Could not read scratch/.</div>';
   }
 }
+
+/* A written-file line in the chat opens the draft on the desk. */
+feed.addEventListener('click', e => {
+  const row = e.target.closest('[data-openfile]');
+  if (row) openFile(row.dataset.openfile);
+});
+feed.addEventListener('keydown', e => {
+  const row = e.target.closest('[data-openfile]');
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openFile(row.dataset.openfile); }
+});
 $('#files').addEventListener('click', e => {
   const row = e.target.closest('.frow');
   if (row) openFile(row.dataset.file);
@@ -746,6 +769,29 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') $('#viewer').classList.remove('open');
 });
 
+/* ---------- canvas sync ---------- */
+$('#canvas-sync').addEventListener('click', async () => {
+  const btn = $('#canvas-sync');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = 'Syncing…';
+  try {
+    const r = await post('/api/canvas/sync');
+    notice(r.added.length
+      ? `Canvas: ${r.added.length} new, ${r.skipped} already tracked.`
+      : (r.found ? `Canvas: nothing new (${r.skipped} already tracked).`
+                 : 'Canvas: no upcoming assignments found.'));
+    loadState();
+  } catch (err) {
+    // Most likely "not configured" — point the user at the fix without nagging.
+    notice(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+});
+
 /* ---------- session ---------- */
 $('#new-session').addEventListener('click', async () => {
   if (busy) { notice('Wait for the current run to finish.'); return; }
@@ -763,6 +809,7 @@ const TOOL_LABEL = {
   capture_thought: 'captured', add_reminder: 'reminder set', complete_item: 'marked done',
   list_plate: 'reading plate', agenda: 'checking agenda',
   propose_agents: 'scanning for gaps', create_agent: 'creating specialist',
+  WebFetch: 'fetching', WebSearch: 'searching the web',
 };
 
 let liveMsg = null, liveRaw = '', liveAgent = undefined, thinkEl = null, dirty = false;
@@ -799,10 +846,25 @@ function onEvent(ev) {
     case 'tool': {
       dropThinking(); liveMsg = null;
       const label = TOOL_LABEL[ev.tool] || ev.tool;
-      const cls = ev.scope === 'file' ? 'line file' : 'line';
-      add(`<div class="${cls}"><span class="arrow">&#9656;</span>
-        <span class="nm">${esc(label)}</span>
-        <span class="dt">${esc(ev.detail || '')}</span></div>`);
+      // A Write/Edit to a file becomes a clickable line that opens the draft
+      // right here on the desk — no need to leave for VSCode.
+      const wrote = ev.scope === 'file' && (ev.tool === 'Write' || ev.tool === 'Edit') && ev.detail;
+      if (wrote) {
+        const base = ev.detail.split(/[\\/]/).pop();
+        add(`<div class="line file wrote" data-openfile="${esc(base)}" role="button" tabindex="0"
+              title="Open ${esc(base)} on the desk">
+          <span class="arrow">&#9656;</span>
+          <span class="nm">${esc(label)}</span>
+          <span class="dt">${esc(base)}</span>
+          <span class="open">open &rarr;</span>
+        </div>`);
+        dirty = true;           // a new draft exists; refresh the files list
+      } else {
+        const cls = ev.scope === 'file' ? 'line file' : 'line';
+        add(`<div class="${cls}"><span class="arrow">&#9656;</span>
+          <span class="nm">${esc(label)}</span>
+          <span class="dt">${esc(ev.detail || '')}</span></div>`);
+      }
       if (ev.mutates) dirty = true;
       break;
     }
@@ -854,7 +916,7 @@ async function send() {
 
   // Refresh the plate periodically while the run is in flight, so items appear
   // as they're captured rather than all at once when the run finishes.
-  const ticker = setInterval(() => { if (dirty) { dirty = false; loadState(); } }, 1200);
+  const ticker = setInterval(() => { if (dirty) { dirty = false; loadState(); loadFiles(); } }, 1200);
 
   try {
     const res = await fetch('/api/chat', {

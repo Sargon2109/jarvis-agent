@@ -18,6 +18,11 @@ FILE_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep", "Write", "Edit")
 #: Read-only subset, for agents that should investigate but never produce files.
 READONLY_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
 
+#: Web access. Granted narrowly — a fetched page is untrusted text that can try
+#: to steer an agent, so only outward-facing specialists that genuinely need to
+#: look things up should hold these. WebFetch reads a URL; WebSearch finds them.
+NET_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
+
 #: The store tools, so a specialist can record what it discovers and close out work.
 #: Deliberately the *store* tools only — a specialist can never create other
 #: agents. Growing the roster is the orchestrator's job, with the user's consent.
@@ -25,7 +30,9 @@ STORE_TOOLS: tuple[str, ...] = tuple(store_tool_names())
 
 #: The full set an agent is ever allowed to hold. Anything created at runtime
 #: (a promoted agent) must draw its tools from here — never arbitrary power.
-ALLOWED_TOOLS: frozenset[str] = frozenset(FILE_TOOLS) | frozenset(STORE_TOOLS)
+ALLOWED_TOOLS: frozenset[str] = (
+    frozenset(FILE_TOOLS) | frozenset(STORE_TOOLS) | frozenset(NET_TOOLS)
+)
 
 #: Appended to every specialist prompt so behavior is consistent across agents.
 SHARED_CONVENTIONS = (

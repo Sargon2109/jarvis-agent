@@ -31,6 +31,9 @@ python -m jarvis schedule --at 07:00   # how to run the brief every morning
 
 python -m jarvis agents        # who Jarvis can delegate to
 python -m jarvis agents --show club
+
+python -m jarvis canvas        # import upcoming Canvas assignments as reminders
+python -m jarvis canvas --within 30 --dry-run
 ```
 
 `dump` is the zero-friction capture: it saves your words verbatim and instantly,
@@ -108,6 +111,7 @@ Everything is a small, single-responsibility piece of the `jarvis/` package:
 | `jarvis/cli.py` | The offline command line. |
 | `jarvis/server.py` | The command desk: JSON API + streamed chat over the live store. |
 | `jarvis/ledger.py` | Append-only cost ledger — what every run actually spent. |
+| `jarvis/canvas.py` | Canvas integration — pulls assignments/deadlines onto the plate. |
 | `jarvis/web/` | The desk's single-page front end (no build step). |
 | `main.py` | The LLM dump entry point. |
 
@@ -160,6 +164,26 @@ stays your decision.
 The **store is the spine**: both the CLI and the agents read and write the same
 `data/plate.json`. The `Store` interface means a future SQLite backend can drop
 in without touching anything else.
+
+### Canvas: deadlines you didn't type
+
+Coursework deadlines are the biggest source of things you owe, and they already
+live in Canvas. `jarvis canvas` reads your upcoming assignments straight from the
+Canvas REST API and captures each dated one as a `homework` reminder, so they
+surface in the agenda and briefing like everything else. The desk has a **Sync
+Canvas** button that does the same thing.
+
+It's **idempotent**: each assignment carries its stable Canvas URL, so re-running
+adds only what's new and skips what's already on your plate. Connect it by adding
+two lines to `.env` (stdlib `urllib` does the HTTP — no new dependency):
+
+```
+JARVIS_CANVAS_URL=https://yourschool.instructure.com
+JARVIS_CANVAS_TOKEN=your-canvas-access-token
+```
+
+Generate the token in Canvas → Account → Settings → **New Access Token**. It's a
+secret, so it lives in the gitignored `.env`, never on the command line.
 
 ### The command desk
 

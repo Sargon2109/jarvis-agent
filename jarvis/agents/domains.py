@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from claude_agent_sdk import AgentDefinition
 
-from .base import FILE_TOOLS, build_agent
+from .base import FILE_TOOLS, NET_TOOLS, build_agent
 
 club_agent = build_agent(
     description=(
@@ -53,6 +53,7 @@ rebrand_agent = build_agent(
 )
 
 startup_agent = build_agent(
+    tools=FILE_TOOLS + NET_TOOLS,
     description=(
         "Work on the user's startup: user outreach, customer conversations, "
         "traction, positioning, and product decisions."
@@ -111,6 +112,7 @@ leetcode_agent = build_agent(
 )
 
 internships_agent = build_agent(
+    tools=FILE_TOOLS + NET_TOOLS,
     description=(
         "Internship and job applications: finding roles, tailoring resumes, writing "
         "cover letters, tracking deadlines, and prepping for interviews."

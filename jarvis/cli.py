@@ -23,6 +23,13 @@ from typing import Optional, Sequence
 from .agenda import build_agenda, render_agenda
 from .agents import RESERVED_NAMES
 from .briefing import DEFAULT_STALE_DAYS, build_briefing, render_briefing
+from .canvas import (
+    DEFAULT_WITHIN_DAYS as CANVAS_WITHIN_DAYS,
+    CanvasClient,
+    CanvasConfig,
+    CanvasError,
+    sync_to_store,
+)
 from .dumps import DumpLog, DumpLogError
 from .models import KINDS, STATUSES, format_item
 from .orchestrator import available_agents
@@ -38,6 +45,17 @@ from .registry import AgentRegistry, RegistryError
 from .scheduling import DEFAULT_TIME, build_plan
 from .server import DEFAULT_HOST, DEFAULT_PORT, JarvisAPI, serve
 from .storage import JSONStore, Store, StoreError
+
+
+def _load_env() -> None:
+    """Load .env so CLI commands see JARVIS_CANVAS_* and ANTHROPIC_API_KEY,
+    matching main.py. A missing python-dotenv is non-fatal — the offline
+    commands don't need it."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:  # noqa: BLE001 - env loading is best-effort
+        pass
 
 
 def _use_utf8_stdout() -> None:
@@ -108,6 +126,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_sched = sub.add_parser("schedule", help="show how to run the briefing every morning")
     p_sched.add_argument("--at", default=DEFAULT_TIME, help=f"time of day, HH:MM (default {DEFAULT_TIME})")
+
+    p_canvas = sub.add_parser("canvas", help="import upcoming Canvas assignments as homework reminders")
+    p_canvas.add_argument("--within", type=int, default=CANVAS_WITHIN_DAYS, metavar="DAYS",
+                          help=f"how many days ahead to import (default {CANVAS_WITHIN_DAYS})")
+    p_canvas.add_argument("--dry-run", action="store_true",
+                          help="show what would be imported without changing the plate")
 
     p_serve = sub.add_parser("serve", help="open the command desk (chat dashboard) in your browser")
     p_serve.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default {DEFAULT_PORT})")
@@ -296,6 +320,20 @@ def _cmd_schedule(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_canvas(store: Store, args: argparse.Namespace) -> int:
+    """Pull upcoming assignments from Canvas onto the plate."""
+    try:
+        client = CanvasClient(CanvasConfig.from_env())
+        result = sync_to_store(store, client, within_days=args.within, dry_run=args.dry_run)
+    except CanvasError as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(result.summary())
+    if args.dry_run and result.added:
+        print("\n(dry run — nothing was added. Re-run without --dry-run to import.)")
+    return 0
+
+
 def _cmd_serve(store: Store, args: argparse.Namespace, registry: AgentRegistry,
                log: DumpLog) -> int:
     """Run the command desk. Blocks until Ctrl-C."""
@@ -316,6 +354,7 @@ _HANDLERS = {
     "done": _cmd_done,
     "remove": _cmd_remove,
     "schedule": _cmd_schedule,
+    "canvas": _cmd_canvas,
 }
 
 #: Commands that operate on the agent registry rather than the store.
@@ -347,6 +386,7 @@ def main(
     the defaults (or their ``$JARVIS_*_PATH`` overrides) are used.
     """
     _use_utf8_stdout()
+    _load_env()
     args = _build_parser().parse_args(argv)
     store = store or JSONStore()
     try:
@@ -363,7 +403,7 @@ def main(
         if args.command in _LOG_HANDLERS:
             return _LOG_HANDLERS[args.command](store, args, log or DumpLog())
         return _HANDLERS[args.command](store, args)
-    except (ValueError, StoreError, RegistryError, DumpLogError) as exc:
+    except (ValueError, StoreError, RegistryError, DumpLogError, CanvasError) as exc:
         print(f"Error: {exc}")
         return 1
 

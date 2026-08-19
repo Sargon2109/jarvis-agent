@@ -20,6 +20,7 @@ from .agents import (
     RESERVED_NAMES,
 )
 from .agent_tools import agent_tool_names, build_agent_tools
+from .agents.base import NET_TOOLS
 from .registry import AgentRegistry
 from .storage import JSONStore, Store
 from .tools import SERVER_NAME, build_store_server, store_tool_names
@@ -141,7 +142,7 @@ def build_orchestrator_options(
     return ClaudeAgentOptions(
         system_prompt=build_system_prompt(domain_map),
         model=ORCHESTRATOR_MODEL,
-        allowed_tools=["Task", *store_tool_names(), *agent_tool_names()],
+        allowed_tools=["Task", *NET_TOOLS, *store_tool_names(), *agent_tool_names()],
         permission_mode="acceptEdits",
         mcp_servers={SERVER_NAME: build_store_server(store, dump_id, extra)},
         agents=agents,

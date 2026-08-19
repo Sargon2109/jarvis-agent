@@ -46,6 +46,13 @@ from claude_agent_sdk import (
 from .agenda import build_agenda
 from .agents import RESERVED_NAMES
 from .briefing import DEFAULT_STALE_DAYS, build_briefing
+from .canvas import (
+    DEFAULT_WITHIN_DAYS as CANVAS_WITHIN_DAYS,
+    CanvasClient,
+    CanvasConfig,
+    CanvasError,
+    sync_to_store,
+)
 from .dumps import DumpLog, DumpLogError
 from .ledger import CostLedger
 from .models import Item
@@ -256,6 +263,23 @@ class JarvisAPI:
                         .isoformat(timespec="seconds"),
         }
 
+    # --- canvas --------------------------------------------------------------
+    def sync_canvas(self, *, within_days: int = CANVAS_WITHIN_DAYS,
+                    dry_run: bool = False) -> dict:
+        """Import upcoming Canvas assignments onto the plate. Raises CanvasError
+        (not configured / auth / unreachable), which the handler maps to a 400."""
+        client = CanvasClient(CanvasConfig.from_env())
+        result = sync_to_store(self.store, client, within_days=within_days, dry_run=dry_run)
+        return {
+            "found": result.found,
+            "skipped": result.skipped,
+            "added": [
+                {"title": a.title, "course": a.course, "due": a.due}
+                for a in result.added
+            ],
+            "summary": result.summary(),
+        }
+
     # --- session -------------------------------------------------------------
     def reset_session(self) -> dict:
         """Forget the current conversation. The next message starts fresh.
@@ -388,6 +412,15 @@ class JarvisAPI:
                 "agent": speaker,
                 # Any store write changes what the plate should show.
                 "mutates": name not in ("list_plate", "agenda", "propose_agents"),
+            }
+        if block.name in ("WebFetch", "WebSearch"):
+            return {
+                "type": "tool",
+                "tool": block.name,
+                "scope": "web",
+                "detail": str(block.input.get("url") or block.input.get("query") or ""),
+                "agent": speaker,
+                "mutates": False,
             }
         return {
             "type": "tool",
@@ -548,6 +581,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(self.api.save_dump(self._body().get("text", "")))
             if path == "/api/session/reset":
                 return self._json(self.api.reset_session())
+            if path == "/api/canvas/sync":
+                return self._json(self.api.sync_canvas())
             if path.startswith("/api/items/"):
                 item_id, _, action = path[len("/api/items/"):].partition("/")
                 item_id = unquote(item_id)
@@ -559,7 +594,7 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json(self.api.remove_item(item_id))
         except LookupError as exc:
             return self._error(404, str(exc))
-        except (ValueError, StoreError, RegistryError, DumpLogError) as exc:
+        except (ValueError, StoreError, RegistryError, DumpLogError, CanvasError) as exc:
             return self._error(400, str(exc))
         return self._error(404, "not found")
 
