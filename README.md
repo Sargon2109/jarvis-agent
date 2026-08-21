@@ -34,6 +34,11 @@ python -m jarvis agents --show club
 
 python -m jarvis canvas        # import upcoming Canvas assignments as reminders
 python -m jarvis canvas --within 30 --dry-run
+
+python -m jarvis notify        # desktop notifications for overdue/due-today
+python -m jarvis schedule --job notify --every 60   # how to run that hourly
+python -m jarvis doctor        # check every data file; reports, never repairs
+python -m jarvis migrate-store data/plate.db        # switch to SQLite
 ```
 
 `dump` is the zero-friction capture: it saves your words verbatim and instantly,
@@ -112,6 +117,8 @@ Everything is a small, single-responsibility piece of the `jarvis/` package:
 | `jarvis/server.py` | The command desk: JSON API + streamed chat over the live store. |
 | `jarvis/ledger.py` | Append-only cost ledger — what every run actually spent. |
 | `jarvis/canvas.py` | Canvas integration — pulls assignments/deadlines onto the plate. |
+| `jarvis/notify.py` | Desktop notifications for what's due — once per item per day. |
+| `jarvis/doctor.py` | Data-file health checks; reports, never repairs. |
 | `jarvis/web/` | The desk's single-page front end (no build step). |
 | `main.py` | The LLM dump entry point. |
 
@@ -202,6 +209,32 @@ read-modify-write — the desk's threaded server means quick-adds, item clicks,
 and the orchestrator's own captures can all write at once, and none of them may
 lose another's work. (`tests/test_concurrency.py` hammers exactly this.)
 
+### Notifications: the tap on the shoulder
+
+`jarvis notify` pushes what's overdue and due today as native desktop
+notifications (macOS `osascript`, Linux `notify-send`) — computed from the same
+agenda everything else reads, deduplicated so each item announces **once per
+day** no matter how often the job fires. `jarvis schedule --job notify` prints
+the launchd/cron/schtasks commands to run it on a repeat; as always, running
+them is your decision. The desk can also fire browser notifications — hit
+**Enable** under Alerts in the left rail.
+
+### Two storage backends
+
+`Store` is an interface, and it now has two implementations. The default is the
+JSON file; point `JARVIS_STORE_PATH` at a `.db` file and the same data lives in
+**SQLite** instead — WAL mode, per-operation connections, and real
+*cross-process* safety, which matters once a scheduled `jarvis notify` job can
+write while the desk is open. Move over with:
+
+```bash
+python -m jarvis migrate-store data/plate.db
+# then set JARVIS_STORE_PATH=data/plate.db in .env
+```
+
+Both backends enforce identical validation, and the SQLite tests mirror the
+JSON ones so the two can't drift.
+
 ### Your data
 
 Everything is local files under `data/` (gitignored — your thoughts never go to
@@ -213,6 +246,7 @@ GitHub):
 | `dumps.jsonl` | Every brain-dump, verbatim, append-only. | `JARVIS_DUMPS_PATH` |
 | `agents.json` | Custom agents added over time. | `JARVIS_REGISTRY_PATH` |
 | `costs.jsonl` | One line per run: cost, turns, duration, dump id. | `JARVIS_LEDGER_PATH` |
+| `notify-state.json` | Which items were already announced today. | `JARVIS_NOTIFY_STATE_PATH` |
 
 Items carry the `dump_id` they came from, so any task can be traced back to what
 you actually said — and a dump counts as "sorted" once items point at it.
@@ -235,7 +269,9 @@ No pytest required:
 python run_tests.py
 ```
 
-All tests run fully offline (no API calls).
+All tests run fully offline (no API calls). CI runs the suite on Ubuntu and
+Windows plus `mypy jarvis` (see `.github/workflows/ci.yml`); dev tools are in
+`requirements-dev.txt`.
 
 ---
 

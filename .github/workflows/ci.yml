@@ -1,0 +1,39 @@
+# CI: the offline test suite on both OSes the README claims to support,
+# plus a type check. Everything runs without an API key by design.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest       # the README documents Windows support;
+            python: "3.12"           # CI is what makes that claim true
+          - os: ubuntu-latest
+            python: "3.10"           # the floor pyproject.toml declares
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements.txt
+      - run: python run_tests.py
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: mypy jarvis

@@ -237,6 +237,27 @@ button{font-family:var(--mono);cursor:pointer}
 .primary:disabled{opacity:.35;cursor:not-allowed}
 .hint{margin-top:6px;font-size:9px;color:var(--faint);letter-spacing:.11em}
 
+/* ---------- voice input ---------- */
+.mic{
+  background:rgba(0,229,255,.07);border:1px solid var(--line);color:var(--cyan-dim);
+  padding:11px 13px;font-size:12px;transition:.16s;white-space:nowrap
+}
+.mic:hover{color:var(--cyan);border-color:var(--line-2)}
+.mic.rec{
+  color:var(--red);border-color:rgba(255,77,94,.5);background:rgba(255,77,94,.1);
+  animation:pulse 1.2s ease-in-out infinite
+}
+
+/* ---------- widgets ---------- */
+.widgets{border-top:1px solid var(--line);flex-shrink:0}
+.widget{
+  display:flex;align-items:baseline;justify-content:space-between;gap:9px;
+  padding:7px 11px;border-bottom:1px solid rgba(0,229,255,.06);font-size:10.5px
+}
+.widget:last-child{border-bottom:0}
+.widget .wk{color:var(--faint);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase}
+.widget .wv{color:var(--cyan-2);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* ---------- quick add ---------- */
 .qa{display:flex;gap:5px;padding:9px 13px;border-bottom:1px solid var(--line);flex-shrink:0}
 .qa input[type=text]{
@@ -375,6 +396,18 @@ button{font-family:var(--mono);cursor:pointer}
           <div class="stat"><div class="n" id="s-today">0</div><div class="l">Due Today</div></div>
           <div class="stat"><div class="n" id="s-done">0</div><div class="l">Completed</div></div>
         </div>
+        <div class="widgets">
+          <div class="widget" id="w-weather" style="display:none">
+            <span class="wk">Weather</span><span class="wv" id="w-weather-v">—</span>
+          </div>
+          <div class="widget" id="w-system" style="display:none">
+            <span class="wk">System</span><span class="wv" id="w-system-v">—</span>
+          </div>
+          <div class="widget" id="w-alerts">
+            <span class="wk">Alerts</span>
+            <span class="wv"><button class="mini" id="alerts-btn">Enable</button></span>
+          </div>
+        </div>
       </div>
       <div class="panel" style="flex:1">
         <div class="ptitle"><span>Specialists</span><span class="count" id="ag-count">0</span></div>
@@ -396,6 +429,7 @@ button{font-family:var(--mono);cursor:pointer}
         <div class="cwrap">
           <textarea id="input" rows="1" placeholder="Dump whatever's on your mind…"
                     aria-label="Message to Jarvis"></textarea>
+          <button id="mic" class="mic" title="Talk instead of type" aria-label="Voice input">MIC</button>
           <button id="send" class="primary">Transmit</button>
         </div>
         <div class="hint">Enter to send · Shift+Enter for a new line · captured before anything runs</div>
@@ -972,10 +1006,130 @@ window.addEventListener('beforeunload', e => {
   if (busy) { e.preventDefault(); e.returnValue = ''; }
 });
 
+/* ---------- voice input (browser speech-to-text, no API) ---------- */
+(function initVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = $('#mic');
+  if (!SR) { mic.style.display = 'none'; return; }   // unsupported browser
+  let rec = null, base = '';
+  mic.addEventListener('click', () => {
+    if (rec) { rec.stop(); return; }                 // click again to stop
+    rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    base = input.value;                              // keep anything already typed
+    let lastWritten = null;
+    mic.classList.add('rec'); mic.textContent = 'REC';
+    rec.onresult = e => {
+      // If the box changed since our last write (the user typed, or send()
+      // cleared it), re-baseline instead of resurrecting stale text.
+      if (lastWritten !== null && input.value !== lastWritten) base = input.value;
+      let text = '';
+      for (const result of e.results) text += result[0].transcript;
+      lastWritten = (base + ' ' + text).trim();
+      input.value = lastWritten;
+      input.dispatchEvent(new Event('input'));       // autosize
+    };
+    rec.onerror = () => { if (rec) rec.stop(); };
+    rec.onend = () => {
+      rec = null;
+      mic.classList.remove('rec'); mic.textContent = 'MIC';
+      input.focus();
+    };
+    rec.start();
+  });
+})();
+
+/* ---------- widgets ---------- */
+const WMO = {                    // Open-Meteo weather codes, coarsely grouped
+  0:'Clear',1:'Mostly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Fog',
+  51:'Drizzle',53:'Drizzle',55:'Drizzle',61:'Rain',63:'Rain',65:'Heavy rain',
+  66:'Freezing rain',67:'Freezing rain',71:'Snow',73:'Snow',75:'Heavy snow',
+  77:'Snow',80:'Showers',81:'Showers',82:'Heavy showers',85:'Snow showers',
+  86:'Snow showers',95:'Thunderstorm',96:'Thunderstorm',99:'Thunderstorm',
+};
+function initWeather() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(async pos => {
+    const { latitude, longitude } = pos.coords;
+    async function refresh() {
+      try {
+        const res = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
+          `&current=temperature_2m,weather_code&temperature_unit=fahrenheit`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const c = data.current;
+        $('#w-weather-v').textContent =
+          `${Math.round(c.temperature_2m)}°F · ${WMO[c.weather_code] || ''}`;
+        $('#w-weather').style.display = '';
+      } catch (_) { /* offline: leave the widget hidden */ }
+    }
+    refresh();
+    setInterval(refresh, 30 * 60 * 1000);   // weather doesn't need to be live
+  }, () => {} /* denied: widget stays hidden */, { timeout: 10000 });
+}
+async function refreshSystem() {
+  try {
+    const res = await fetch('/api/system');
+    if (!res.ok) return;
+    const s = await res.json();
+    const bits = [];
+    if (s.load) bits.push(`load ${s.load[0]}`);
+    if (s.disk) bits.push(`${s.disk.free_gb}G free`);
+    if (!bits.length) return;
+    $('#w-system-v').textContent = bits.join(' · ');
+    $('#w-system').style.display = '';
+  } catch (_) {}
+}
+
+/* ---------- browser alerts for due/overdue items ---------- */
+const alertedIds = new Set();    // once per item per page session
+function maybeNotify() {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || !state) return;
+  for (const [label, bucket] of [['Overdue', state.agenda.overdue], ['Due today', state.agenda.today]]) {
+    for (const item of bucket) {
+      if (alertedIds.has(item.id)) continue;
+      alertedIds.add(item.id);
+      try {
+        // Some browsers (notably Chrome on Android) expose Notification and
+        // grant permission, yet throw here because they require a service
+        // worker. An unguarded throw would abort the rest of startup and the
+        // refresh intervals would never be installed.
+        const n = new Notification(`JARVIS — ${label}`, { body: item.title, tag: item.id });
+        n.onclick = () => window.focus();
+      } catch (_) {
+        return;   // notifications unavailable in this context; stay silent
+      }
+    }
+  }
+}
+function renderAlertsWidget() {
+  if (!('Notification' in window)) { $('#w-alerts').style.display = 'none'; return; }
+  if (Notification.permission === 'granted') {
+    $('#w-alerts').querySelector('.wv').innerHTML = '<span style="color:var(--green)">On</span>';
+    maybeNotify();
+  } else if (Notification.permission === 'denied') {
+    $('#w-alerts').querySelector('.wv').innerHTML = '<span style="color:var(--faint)">Blocked</span>';
+  }
+}
+document.addEventListener('click', e => {
+  if (e.target.id !== 'alerts-btn') return;
+  Notification.requestPermission().then(renderAlertsWidget);
+});
+
+/* Hook alerts into every state refresh. */
+const _loadState = loadState;
+loadState = async function() { await _loadState(); maybeNotify(); };
+
 boot();
 loadState();
 loadFiles();
+initWeather();
+refreshSystem();
+renderAlertsWidget();
 setInterval(() => { if (!busy) loadState(); }, 15000);
+setInterval(refreshSystem, 30000);
 input.focus();
 </script>
 </body>

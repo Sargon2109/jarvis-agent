@@ -17,7 +17,7 @@ from claude_agent_sdk import SdkMcpTool, create_sdk_mcp_server, tool
 
 from .agenda import build_agenda, render_agenda
 from .models import format_item
-from .storage import JSONStore, Store, StoreError
+from .storage import Store, StoreError, create_store
 
 #: Name of the in-process MCP server; tools are namespaced ``mcp__<server>__<tool>``.
 SERVER_NAME = "jarvis_store"
@@ -200,13 +200,13 @@ def build_store_server(
 ):
     """Build the in-process MCP server exposing the store tools.
 
-    Pass a ``store`` to inject one (tests do this); defaults to a ``JSONStore``
-    at the standard location. ``dump_id`` links captured items to their dump.
+    Pass a ``store`` to inject one (tests do this); defaults to whatever
+    :func:`~jarvis.storage.create_store` picks for the configured path. ``dump_id`` links captured items to their dump.
     ``extra_tools`` adds orchestrator-only tools (see :mod:`jarvis.agent_tools`)
     to the same server — specialists never receive them, because what an agent
     may use is decided by its own tool allowlist, not by what the server offers.
     """
-    store = store or JSONStore()
+    store = store or create_store()
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="0.4.0",

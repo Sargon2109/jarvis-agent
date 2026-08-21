@@ -146,6 +146,7 @@ class CanvasClient:
         """GET a paginated Canvas collection, following ``rel="next"`` to the end."""
         from urllib.parse import urlencode
 
+        url: Optional[str]
         if path.startswith("http"):
             url = path
         else:

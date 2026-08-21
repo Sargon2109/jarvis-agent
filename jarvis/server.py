@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,7 +59,7 @@ from .ledger import CostLedger
 from .models import Item
 from .orchestrator import available_agents, build_orchestrator_options
 from .registry import AgentRegistry, RegistryError
-from .storage import JSONStore, Store, StoreError
+from .storage import Store, StoreError, create_store
 from .tools import SERVER_NAME
 
 #: Where the single-page front end lives.
@@ -112,7 +113,7 @@ class JarvisAPI:
         ledger: Optional[CostLedger] = None,
         scratch_dir: Path | str | None = None,
     ):
-        self.store = store or JSONStore()
+        self.store = store or create_store()
         self.registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
         self.log = log or DumpLog()
         self.ledger = ledger or CostLedger()
@@ -217,6 +218,27 @@ class JarvisAPI:
         record = self.log.append(text, source="cli")
         return {"dump": {"id": record.id, "created_at": record.created_at}}
 
+    # --- system --------------------------------------------------------------
+    def system_stats(self) -> dict:
+        """Glanceable machine stats for the desk's widget strip. Stdlib only."""
+        import shutil as _shutil
+
+        load = None
+        if hasattr(os, "getloadavg"):
+            try:
+                load = [round(x, 2) for x in os.getloadavg()]
+            except OSError:
+                load = None
+        try:
+            usage = _shutil.disk_usage(Path.home())
+            disk = {
+                "free_gb": round(usage.free / 1e9, 1),
+                "total_gb": round(usage.total / 1e9, 1),
+            }
+        except OSError:
+            disk = None
+        return {"load": load, "disk": disk, "cpus": os.cpu_count()}
+
     # --- scratch -------------------------------------------------------------
     def scratch_files(self) -> dict:
         """The drafts the specialists have produced, newest first.
@@ -226,7 +248,7 @@ class JarvisAPI:
         """
         if not self.scratch_dir.is_dir():
             return {"files": []}
-        files = []
+        files: list[dict] = []
         for path in self.scratch_dir.iterdir():
             if not path.is_file() or path.name.startswith("."):
                 continue
@@ -237,7 +259,7 @@ class JarvisAPI:
                 "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
                             .isoformat(timespec="seconds"),
             })
-        files.sort(key=lambda f: f["modified"], reverse=True)
+        files.sort(key=lambda f: str(f["modified"]), reverse=True)
         return {"files": files}
 
     def scratch_file(self, name: str) -> dict:
@@ -497,12 +519,15 @@ class _Handler(BaseHTTPRequestHandler):
     #     can only send text/plain or form types without a CORS preflight, and
     #     the preflight fails here because this server never answers it.
 
+    def _bound_address(self) -> str:
+        address = self.server.server_address
+        return str(address[0]) if isinstance(address, tuple) else str(address)
+
     def _allowed_names(self) -> frozenset[str]:
-        bound = self.server.server_address[0]
-        return LOOPBACK_NAMES | {bound}
+        return LOOPBACK_NAMES | {self._bound_address()}
 
     def _host_ok(self) -> bool:
-        bound = self.server.server_address[0]
+        bound = self._bound_address()
         if bound in ("0.0.0.0", "::"):
             # Bound to everything on explicit request: there is no single
             # correct Host value to insist on. serve() already warned loudly.
@@ -556,6 +581,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(self.api.state())
             except (StoreError, RegistryError, DumpLogError) as exc:
                 return self._error(500, str(exc))
+        if path == "/api/system":
+            return self._json(self.api.system_stats())
         if path == "/api/scratch":
             return self._json(self.api.scratch_files())
         if path.startswith("/api/scratch/"):

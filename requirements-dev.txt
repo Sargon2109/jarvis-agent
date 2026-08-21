@@ -1,0 +1,2 @@
+# Development-only tools. Runtime deps live in requirements.txt (pinned).
+mypy==2.3.1

@@ -42,9 +42,11 @@ from .promotion import (
     render_candidates,
 )
 from .registry import AgentRegistry, RegistryError
-from .scheduling import DEFAULT_TIME, build_plan
+from .doctor import run_doctor
+from .notify import NotifyState, run_notify
+from .scheduling import DEFAULT_TIME, build_notify_plan, build_plan
 from .server import DEFAULT_HOST, DEFAULT_PORT, JarvisAPI, serve
-from .storage import JSONStore, Store, StoreError
+from .storage import Store, StoreError, create_store, migrate_items
 
 
 def _load_env() -> None:
@@ -124,8 +126,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_brief.add_argument("--stale-days", type=int, default=DEFAULT_STALE_DAYS,
                          help=f"days untouched before an item counts as forgotten (default {DEFAULT_STALE_DAYS})")
 
-    p_sched = sub.add_parser("schedule", help="show how to run the briefing every morning")
+    p_sched = sub.add_parser("schedule", help="show how to run the briefing (or notifications) automatically")
     p_sched.add_argument("--at", default=DEFAULT_TIME, help=f"time of day, HH:MM (default {DEFAULT_TIME})")
+    p_sched.add_argument("--job", choices=("brief", "notify"), default="brief",
+                         help="brief = daily text briefing; notify = recurring desktop notifications")
+    p_sched.add_argument("--every", type=int, default=60, metavar="MIN",
+                         help="notify only: minutes between checks (default 60)")
+
+    p_notify = sub.add_parser("notify", help="send desktop notifications for overdue/due-today items")
+    p_notify.add_argument("--dry-run", action="store_true",
+                          help="show what would be sent without sending or recording")
+
+    sub.add_parser("doctor", help="check every data file for corruption; reports, never repairs")
+
+    p_migrate = sub.add_parser("migrate-store",
+                               help="copy all items to a new store file (e.g. plate.db for SQLite)")
+    p_migrate.add_argument("target", help="path of the new store (.db/.sqlite = SQLite backend)")
 
     p_canvas = sub.add_parser("canvas", help="import upcoming Canvas assignments as homework reminders")
     p_canvas.add_argument("--within", type=int, default=CANVAS_WITHIN_DAYS, metavar="DAYS",
@@ -316,7 +332,33 @@ def _cmd_brief(store: Store, args: argparse.Namespace, registry: AgentRegistry,
 
 
 def _cmd_schedule(store: Store, args: argparse.Namespace) -> int:
-    print(build_plan(args.at).render())
+    if args.job == "notify":
+        print(build_notify_plan(every_minutes=args.every).render())
+    else:
+        print(build_plan(args.at).render())
+    return 0
+
+
+def _cmd_notify(store: Store, args: argparse.Namespace) -> int:
+    """Send (or preview) the due/overdue notifications."""
+    result = run_notify(store.all(), state=NotifyState(), dry_run=args.dry_run)
+    print(result.summary())
+    if args.dry_run and result.sent:
+        print("\n(dry run - nothing was sent or recorded)")
+    return 0
+
+
+def _cmd_doctor(store: Store, args: argparse.Namespace) -> int:
+    report = run_doctor(reserved=RESERVED_NAMES)
+    print(report.render())
+    return 0 if report.ok() else 1
+
+
+def _cmd_migrate_store(store: Store, args: argparse.Namespace) -> int:
+    target = create_store(args.target)
+    count = migrate_items(store, target)
+    print(f"Copied {count} item(s) to {args.target}.")
+    print(f"Point Jarvis at it with:  JARVIS_STORE_PATH={args.target}")
     return 0
 
 
@@ -355,6 +397,9 @@ _HANDLERS = {
     "remove": _cmd_remove,
     "schedule": _cmd_schedule,
     "canvas": _cmd_canvas,
+    "notify": _cmd_notify,
+    "doctor": _cmd_doctor,
+    "migrate-store": _cmd_migrate_store,
 }
 
 #: Commands that operate on the agent registry rather than the store.
@@ -388,7 +433,7 @@ def main(
     _use_utf8_stdout()
     _load_env()
     args = _build_parser().parse_args(argv)
-    store = store or JSONStore()
+    store = store or create_store()
     try:
         if args.command in _FULL_HANDLERS:
             return _FULL_HANDLERS[args.command](

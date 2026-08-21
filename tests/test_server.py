@@ -499,3 +499,23 @@ def test_http_scratch_routes():
         assert code == 404
     finally:
         httpd.shutdown()
+
+
+# --- system stats ------------------------------------------------------------
+
+def test_system_stats_shape():
+    stats = _api().system_stats()
+    assert "load" in stats and "disk" in stats and "cpus" in stats
+    if stats["disk"] is not None:
+        assert stats["disk"]["total_gb"] > 0
+
+
+def test_http_system_route():
+    api = _api()
+    httpd, base = _server(api)
+    try:
+        status, body = _get(base + "/api/system")
+        assert status == 200
+        assert "cpus" in json.loads(body)
+    finally:
+        httpd.shutdown()

@@ -27,3 +27,12 @@ packages = ["jarvis", "jarvis.agents"]
 
 [tool.setuptools.package-data]
 jarvis = ["web/*.html"]
+
+[tool.mypy]
+python_version = "3.10"
+# Pragmatic, not strict: catch real type errors without demanding annotations
+# the codebase doesn't need. The SDK ships no stubs.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

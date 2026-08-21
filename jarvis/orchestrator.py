@@ -22,7 +22,7 @@ from .agents import (
 from .agent_tools import agent_tool_names, build_agent_tools
 from .agents.base import NET_TOOLS
 from .registry import AgentRegistry
-from .storage import JSONStore, Store
+from .storage import Store, create_store
 from .tools import SERVER_NAME, build_store_server, store_tool_names
 
 #: The model driving the orchestrator itself.
@@ -133,7 +133,7 @@ def build_orchestrator_options(
     ``JARVIS_MAX_TURNS``/``JARVIS_MAX_BUDGET_USD`` env vars, then the module
     defaults; a run that hits a cap stops cleanly instead of running a tab.
     """
-    store = store or JSONStore()
+    store = store or create_store()
     registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
     agents, domain_map = available_agents(registry)
     # The orchestrator alone gets the agent-management tools; specialists hold
