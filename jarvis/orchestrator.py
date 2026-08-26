@@ -23,6 +23,11 @@ from .agent_tools import agent_tool_names, build_agent_tools
 from .agents.base import NET_TOOLS
 from .registry import AgentRegistry
 from .storage import Store, create_store
+from .canvas_tools import (
+    SERVER_NAME as CANVAS_SERVER_NAME,
+    build_canvas_server,
+    canvas_tool_names,
+)
 from .tools import SERVER_NAME, build_store_server, store_tool_names
 
 #: The model driving the orchestrator itself.
@@ -105,6 +110,14 @@ def build_system_prompt(domain_map: dict[str, str]) -> str:
         "want a specialist for it. Only call create_agent once they have clearly said "
         "yes in this conversation — never create one on your own initiative, and "
         "never create one the first time a new topic appears.\n\n"
+        "COURSEWORK AND CANVAS. Jarvis has live, read-only access to the user's "
+        "Canvas — courses, syllabi, assignments, files, announcements, modules. "
+        "Anything about a class, a reading, a deadline, or an assignment goes to "
+        "the 'canvas' specialist, which holds those tools and keeps a durable "
+        "profile of each course. Never tell the user Jarvis cannot see Canvas, "
+        "and never ask them to paste or export something the specialist can "
+        "fetch. You hold the Canvas tools only so the specialist can use them — "
+        "route the work, don't do it yourself.\n\n"
         "If the user is only asking what's on their plate, just report — don't "
         "re-capture or delegate. Be concise: your value is that nothing is "
         "forgotten and the right specialist picks up each piece."
@@ -142,9 +155,20 @@ def build_orchestrator_options(
     return ClaudeAgentOptions(
         system_prompt=build_system_prompt(domain_map),
         model=ORCHESTRATOR_MODEL,
-        allowed_tools=["Task", *NET_TOOLS, *store_tool_names(), *agent_tool_names()],
+        allowed_tools=[
+            "Task", *NET_TOOLS, *store_tool_names(),
+            *agent_tool_names(), *canvas_tool_names(),
+        ],
         permission_mode="acceptEdits",
-        mcp_servers={SERVER_NAME: build_store_server(store, dump_id, extra)},
+        # The Canvas server is registered unconditionally. Its tools resolve the
+        # token lazily, so an unconfigured machine gets a clear "set
+        # JARVIS_CANVAS_TOKEN" error from the tool itself — far better than the
+        # tool silently not existing and the agent concluding it has no access,
+        # which is exactly the failure this whole change is fixing.
+        mcp_servers={
+            SERVER_NAME: build_store_server(store, dump_id, extra),
+            CANVAS_SERVER_NAME: build_canvas_server(),
+        },
         agents=agents,
         resume=resume,
         max_turns=_positive(max_turns, MAX_TURNS_ENV, DEFAULT_MAX_TURNS, int),

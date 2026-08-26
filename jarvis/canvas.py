@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Optional
 
 from .models import DUE_FORMAT
@@ -188,6 +189,81 @@ class CanvasClient:
     def course_assignments(self, course_id: int) -> list[dict]:
         """Assignments for one course."""
         return self._get(f"courses/{course_id}/assignments")
+
+    # --- course material (read-only) -----------------------------------------
+    #
+    # Everything below is GET-only by design. The token Canvas issues also
+    # permits writes — submitting assignments, posting to discussions — and
+    # Jarvis deliberately declines that power. An agent that can read your
+    # coursework is a research assistant; one that can submit on your behalf is
+    # a liability, and a misread deadline would turn into a real submission.
+
+    def _get_optional(self, path: str, params: Optional[dict] = None) -> list:
+        """GET a collection that a course may simply not use.
+
+        Instructors disable tabs (Files, Pages, Modules) all the time, and
+        Canvas answers 404 or 403 for a disabled tab. That means "this course
+        doesn't use that feature", not "something went wrong" — so it degrades
+        to an empty list instead of failing the agent's whole request.
+        """
+        try:
+            return self._get(path, params)
+        except CanvasError as exc:
+            if "HTTP 404" in str(exc) or "HTTP 403" in str(exc):
+                return []
+            raise
+
+    def course_files(self, course_id: int) -> list[dict]:
+        """Files posted in a course (slides, readings, handouts)."""
+        return self._get_optional(f"courses/{course_id}/files")
+
+    def course_announcements(self, course_id: int) -> list[dict]:
+        """Announcements, newest first."""
+        return self._get_optional(
+            "announcements", {"context_codes[]": f"course_{course_id}"}
+        )
+
+    def course_modules(self, course_id: int) -> list[dict]:
+        """Modules with their items — the course's own sense of sequence."""
+        return self._get_optional(
+            f"courses/{course_id}/modules", {"include[]": "items"}
+        )
+
+    def course_pages(self, course_id: int) -> list[dict]:
+        """Wiki pages (often where reading lists and policies actually live)."""
+        return self._get_optional(f"courses/{course_id}/pages")
+
+    def page_body(self, course_id: int, page_url: str) -> dict:
+        """One page including its HTML body."""
+        found = self._get(f"courses/{course_id}/pages/{page_url}")
+        return found[0] if found else {}
+
+    def course_syllabus(self, course_id: int) -> str:
+        """The syllabus body as HTML ('' when the course has none)."""
+        found = self._get(
+            f"courses/{course_id}", {"include[]": "syllabus_body"}
+        )
+        if not found or not isinstance(found[0], dict):
+            return ""
+        return found[0].get("syllabus_body") or ""
+
+    def download_file(self, file_url: str, dest: Path) -> Path:
+        """Download one Canvas file to ``dest``.
+
+        Canvas file URLs carry their own verifier, but sending the token too is
+        harmless and covers files served straight from the API.
+        """
+        headers = {"Authorization": f"Bearer {self.config.token}"}
+        status, _headers, body = self._opener(file_url, headers)
+        if status == 401:
+            raise CanvasError(
+                "Canvas rejected the token (401) while downloading a file."
+            )
+        if status >= 400:
+            raise CanvasError(f"Canvas returned HTTP {status} downloading {file_url}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(body)
+        return dest
 
     def upcoming_assignments(
         self,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from claude_agent_sdk import AgentDefinition
 
+from ..canvas_tools import canvas_tool_names
 from ..tools import SERVER_NAME, store_tool_names
 
 #: File tools a specialist may use. Write/Edit are sandboxed to scratch/ by prompt.
@@ -28,10 +29,18 @@ NET_TOOLS: tuple[str, ...] = ("WebFetch", "WebSearch")
 #: agents. Growing the roster is the orchestrator's job, with the user's consent.
 STORE_TOOLS: tuple[str, ...] = tuple(store_tool_names())
 
+#: Live Canvas access, read-only. Granted narrowly to coursework specialists:
+#: course material is the user's own, but it is still text written by other
+#: people, so only agents that genuinely need it should be able to pull it in.
+CANVAS_TOOLS: tuple[str, ...] = tuple(canvas_tool_names())
+
 #: The full set an agent is ever allowed to hold. Anything created at runtime
 #: (a promoted agent) must draw its tools from here — never arbitrary power.
 ALLOWED_TOOLS: frozenset[str] = (
-    frozenset(FILE_TOOLS) | frozenset(STORE_TOOLS) | frozenset(NET_TOOLS)
+    frozenset(FILE_TOOLS)
+    | frozenset(STORE_TOOLS)
+    | frozenset(NET_TOOLS)
+    | frozenset(CANVAS_TOOLS)
 )
 
 #: Appended to every specialist prompt so behavior is consistent across agents.
