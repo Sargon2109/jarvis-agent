@@ -273,4 +273,77 @@ def test_an_unparseable_docx_is_reported_not_silently_empty():
     tmp = Path(tempfile.mkdtemp(prefix="jarvis-docx-"))
     tools = _tools(BadDocx(), download_dir=tmp)
     result = _run(tools["fetch_course_file"], {"course": "AAM", "filename": "Broken"})
-    assert result.get("is_error") and "could not be extracted" in _body(result)
+    assert result.get("is_error") and "Word document" in _body(result)
+
+
+def _make_pptx(slides) -> bytes:
+    """Build a minimal but real .pptx in memory."""
+    import io
+    import zipfile
+
+    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        for number, lines in enumerate(slides, start=1):
+            body = "".join(f"<a:t>{line}</a:t>" for line in lines)
+            bundle.writestr(
+                f"ppt/slides/slide{number}.xml",
+                f'<?xml version="1.0"?><p:sld xmlns:a="{ns}" '
+                f'xmlns:p="http://x"><p:cSld>{body}</p:cSld></p:sld>',
+            )
+    return buffer.getvalue()
+
+
+def test_pptx_slide_text_is_extracted_with_slide_numbers():
+    from jarvis.canvas_tools import pptx_to_text
+    text = pptx_to_text(_make_pptx([["Chapter 1"], ["Learning Objectives"]]))
+    assert "Slide 1" in text and "Chapter 1" in text
+    assert "Slide 2" in text and "Learning Objectives" in text
+
+
+def test_pptx_slides_stay_in_numeric_order():
+    """Zip entries are not ordered, and slide10 sorts before slide2 as text —
+    an out-of-order deck would make the agent cite the wrong slide."""
+    from jarvis.canvas_tools import pptx_to_text
+    text = pptx_to_text(_make_pptx([[f"content{i}"] for i in range(1, 12)]))
+    assert text.index("Slide 2 ") < text.index("Slide 10 ")
+
+
+def test_a_non_pptx_returns_empty_rather_than_raising():
+    from jarvis.canvas_tools import pptx_to_text
+    assert pptx_to_text(b"not a zip") == ""
+
+
+def test_fetching_a_pptx_returns_its_slide_text():
+    payload = _make_pptx([["Intro to Financial Statements"]])
+
+    class DeckCanvas(FakeCanvas):
+        def course_files(self, course_id):
+            return [{"display_name": "Ch01 Slides.pptx", "url": "https://x/p"}]
+
+        def download_file(self, url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload)
+            return dest
+
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-pptx-"))
+    tools = _tools(DeckCanvas(), download_dir=tmp)
+    body = _body(_run(tools["fetch_course_file"], {"course": "AAM", "filename": "Ch01"}))
+    assert "Intro to Financial Statements" in body
+    assert (tmp / "Ch01 Slides.pptx.txt").exists()
+
+
+def test_an_image_only_deck_is_reported_not_silently_empty():
+    class EmptyDeck(FakeCanvas):
+        def course_files(self, course_id):
+            return [{"display_name": "Scans.pptx", "url": "https://x/s"}]
+
+        def download_file(self, url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(_make_pptx([[]]))
+            return dest
+
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-pptx-"))
+    tools = _tools(EmptyDeck(), download_dir=tmp)
+    result = _run(tools["fetch_course_file"], {"course": "AAM", "filename": "Scans"})
+    assert result.get("is_error") and "PowerPoint deck" in _body(result)

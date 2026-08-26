@@ -125,6 +125,14 @@ def _text(message: str, *, is_error: bool = False) -> dict:
     return result
 
 
+#: Office formats we can unpack ourselves, mapped to a human label.
+OFFICE_SUFFIXES = {".docx": "Word document", ".pptx": "PowerPoint deck"}
+
+#: Text nodes live under different namespaces in Word and PowerPoint.
+_WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+
 def docx_to_text(data: bytes) -> str:
     """Extract readable text from a .docx, using only the stdlib.
 
@@ -147,14 +155,59 @@ def docx_to_text(data: bytes) -> str:
     except ElementTree.ParseError:
         return ""
 
-    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     lines: list[str] = []
-    for paragraph in root.iter(f"{namespace}p"):
-        pieces = [node.text or "" for node in paragraph.iter(f"{namespace}t")]
+    for paragraph in root.iter(f"{_WORD_NS}p"):
+        pieces = [node.text or "" for node in paragraph.iter(f"{_WORD_NS}t")]
         line = "".join(pieces).strip()
         if line:
             lines.append(line)
     return "\n\n".join(lines)
+
+
+def pptx_to_text(data: bytes) -> str:
+    """Extract slide text from a .pptx, using only the stdlib.
+
+    Lecture slides are where a lot of course content actually lives, and a
+    .pptx is binary to the Read tool for the same reason a .docx is. Slides
+    are ``ppt/slides/slideN.xml`` inside the zip; their text sits in DrawingML
+    ``<a:t>`` nodes. Slides are numbered so the agent can cite one.
+    """
+    import io
+    import re as _re
+    import zipfile
+    from xml.etree import ElementTree
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as bundle:
+            names = [
+                n for n in bundle.namelist()
+                if _re.fullmatch(r"ppt/slides/slide\d+\.xml", n)
+            ]
+            names.sort(key=lambda n: int(_re.findall(r"\d+", n)[-1]))
+            slides = [(n, bundle.read(n)) for n in names]
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError):
+        return ""
+
+    chunks: list[str] = []
+    for index, (_name, xml) in enumerate(slides, start=1):
+        try:
+            root = ElementTree.fromstring(xml)
+        except ElementTree.ParseError:
+            continue
+        pieces = [node.text or "" for node in root.iter(f"{_DRAWING_NS}t")]
+        body = "\n".join(p.strip() for p in pieces if p.strip())
+        if body:
+            chunks.append(f"--- Slide {index} ---\n{body}")
+    return "\n\n".join(chunks)
+
+
+def office_to_text(suffix: str, data: bytes) -> str:
+    """Text from whichever Office format we recognize; '' if we don't."""
+    if suffix == ".docx":
+        return docx_to_text(data)
+    if suffix == ".pptx":
+        return pptx_to_text(data)
+    return ""
 
 
 def _safe_filename(name: str) -> str:
@@ -389,16 +442,17 @@ def build_canvas_tools(
         except (CanvasError, OSError) as exc:
             return _text(f"Could not download {label(chosen)!r}: {exc}", is_error=True)
 
-        # Word documents are the standard format for assignment directions, and
-        # Read sees a .docx as binary. Convert it here so the agent gets prose
-        # instead of a file it has to report as unreadable.
-        if saved.suffix.lower() == ".docx":
+        # Word and PowerPoint are how assignment directions and lecture slides
+        # actually arrive, and Read sees both as binary. Convert here so the
+        # agent gets prose instead of a file it must report as unreadable.
+        suffix = saved.suffix.lower()
+        if suffix in OFFICE_SUFFIXES:
             try:
-                extracted = docx_to_text(saved.read_bytes())
+                extracted = office_to_text(suffix, saved.read_bytes())
             except OSError:
                 extracted = ""
             if extracted:
-                companion = saved.with_suffix(".docx.txt")
+                companion = saved.with_suffix(suffix + ".txt")
                 try:
                     companion.write_text(extracted, encoding="utf-8")
                 except OSError:
@@ -409,9 +463,10 @@ def build_canvas_tools(
                         f"text to {companion}\n\n{_clip(extracted)}"
                     )
             return _text(
-                f"Saved {label(chosen)!r} to {saved}, but its text could not be "
-                "extracted — it may be an unusual Word format. Tell the user "
-                "rather than guessing at the contents.",
+                f"Saved {label(chosen)!r} to {saved}, but no text could be "
+                f"extracted from this {OFFICE_SUFFIXES[suffix]} — it may be "
+                "image-only or an unusual format. Tell the user rather than "
+                "guessing at the contents.",
                 is_error=True,
             )
 
