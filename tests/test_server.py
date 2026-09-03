@@ -519,3 +519,22 @@ def test_http_system_route():
         assert "cpus" in json.loads(body)
     finally:
         httpd.shutdown()
+
+
+# --- the desk must show when a run is in flight ------------------------------
+
+def test_state_reports_idle_when_nothing_is_running():
+    assert _api().state()["busy"] is False
+
+
+def test_state_reports_busy_while_the_chat_lock_is_held():
+    """A browser tab only knows about runs it started itself. Without this
+    flag the desk looks idle while another tab holds the lock, and the user's
+    next message is refused after they have already typed it."""
+    api = _api()
+    api._chat_lock.acquire()
+    try:
+        assert api.state()["busy"] is True
+    finally:
+        api._chat_lock.release()
+    assert api.state()["busy"] is False

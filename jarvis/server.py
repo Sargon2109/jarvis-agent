@@ -169,6 +169,12 @@ class JarvisAPI:
                 "today": len(briefing.agenda.today),
                 "quiet": briefing.is_quiet(),
             },
+            # Whether a run is in flight anywhere. A browser tab only knows
+            # about runs it started itself, so without this the desk looks idle
+            # while another tab — or a scheduled job — holds the chat lock, and
+            # the user's next message is refused after they have already typed
+            # it. Reported so the UI can say "busy" before taking the message.
+            "busy": self._chat_lock.locked(),
             "costs": {
                 "month": round(self.ledger.month_total(), 4),
                 "total": round(self.ledger.total(), 4),

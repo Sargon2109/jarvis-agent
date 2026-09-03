@@ -478,7 +478,7 @@ button{font-family:var(--mono);cursor:pointer}
 <script>
 const $ = s => document.querySelector(s);
 const feed = $('#feed'), input = $('#input'), sendBtn = $('#send');
-let sessionCost = 0, busy = false, state = null;
+let sessionCost = 0, busy = false, serverBusy = false, state = null;
 
 /* ---------- clock ---------- */
 setInterval(() => {
@@ -597,6 +597,17 @@ function boot() {
 
 /* ---------- state / plate ---------- */
 let stateSeq = 0;   // sequences loads so a stale response can't clobber a fresh one
+/* A run started elsewhere — another tab, or a scheduled job — holds the same
+   server-side lock this tab would need. Show it, so a message is never typed
+   into a desk that is about to refuse it. Never touches the button while this
+   tab is the one running; `busy` already owns it then. */
+function reflectServerBusy(isBusy) {
+  if (busy) return;
+  serverBusy = isBusy;
+  sendBtn.disabled = isBusy;
+  $('#feed-stat').textContent = isBusy ? 'Busy elsewhere' : 'Standing by';
+}
+
 async function loadState() {
   const seq = ++stateSeq;
   try {
@@ -608,6 +619,7 @@ async function loadState() {
     renderStats(); renderAgents(); renderPlate();
     $('#rd-month').textContent = '$' + (state.costs?.month ?? 0).toFixed(2);
     setOnline(true);
+    reflectServerBusy(!!data.busy);
   } catch (e) {
     if (seq === stateSeq) setOnline(false);
   }
@@ -940,6 +952,8 @@ function onEvent(ev) {
 async function send() {
   const text = input.value.trim();
   if (!text || busy) return;
+  if (serverBusy) { notice('Jarvis is working on something else. One moment.'); return; }
+  let started = false;
   busy = true; sendBtn.disabled = true; dirty = false;
   input.value = ''; input.style.height = 'auto';
   $('#feed-stat').textContent = 'Working';
@@ -964,7 +978,14 @@ async function send() {
     let buf = '';
     const handleFrame = frame => {
       if (frame.startsWith('data: ')) {
-        try { onEvent(JSON.parse(frame.slice(6))); } catch (_) {}
+        try {
+          const ev = JSON.parse(frame.slice(6));
+          // The server emits 'dump' the moment it takes the request. Without
+          // one, the run never started (usually another run holds the lock),
+          // and the message must go back in the box rather than vanish.
+          if (ev.type === 'dump') started = true;
+          onEvent(ev);
+        } catch (_) {}
       }
     };
     while (true) {
@@ -986,6 +1007,14 @@ async function send() {
     dropThinking(); clearLive();
     busy = false; sendBtn.disabled = false;
     $('#feed-stat').textContent = 'Standing by';
+    // A refused run means the message was never delivered. Put it back so it
+    // can be resent with one keystroke instead of retyped from memory — but
+    // never clobber something newly typed while the request was in flight.
+    if (!started && !input.value.trim()) {
+      input.value = text;
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+    }
     loadState(); loadFiles(); input.focus();
   }
 }
