@@ -183,8 +183,16 @@ class CanvasClient:
         return results
 
     def active_courses(self) -> list[dict]:
-        """Courses the user is currently enrolled in."""
-        return self._get("courses", {"enrollment_state": "active"})
+        """Courses the user is currently enrolled in.
+
+        ``include[]=term`` matters more than it looks: Canvas keeps a finished
+        summer course in "active" enrollment state long after it ends, so the
+        term is the only thing separating this semester's classes from last
+        one's. Without it, a stale course looks exactly like a live one.
+        """
+        return self._get(
+            "courses", {"enrollment_state": "active", "include[]": "term"}
+        )
 
     def course_assignments(self, course_id: int) -> list[dict]:
         """Assignments for one course."""

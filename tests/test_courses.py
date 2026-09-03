@@ -119,3 +119,40 @@ def test_profile_tools_do_not_require_canvas_to_be_reachable():
     assert "known offline" in _body(
         _run(tools["read_course_profile"], {"course": "AAM"})
     )
+
+
+# --- profiles are keyed to Canvas's own course name --------------------------
+
+def test_the_same_course_named_differently_shares_one_profile():
+    """'AAM-1730' and 'AAM-1730-01' are the same class. Filing them separately
+    splits the course's knowledge and makes the second run start cold."""
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-canon-"))
+    tools = _tools(tmp)
+    _run(tools["update_course_profile"],
+         {"course": "AAM-1730", "body": "# AAM\n\nGrade: 40% essays."})
+    body = _body(_run(tools["read_course_profile"], {"course": "AAM-1730-01"}))
+    assert "40% essays" in body
+    assert len(list(tmp.glob("*.md"))) == 1
+
+
+def test_a_short_code_and_the_full_name_agree():
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-canon-"))
+    tools = _tools(tmp)
+    _run(tools["update_course_profile"], {"course": "aam1730", "body": "learned"})
+    assert "learned" in _body(_run(tools["read_course_profile"], {"course": "AAM-1730-01"}))
+    assert [p.stem for p in tmp.glob("*.md")] == ["aam-1730-01"]
+
+
+def test_an_unresolvable_course_still_gets_a_profile():
+    """Canvas being unreachable must not make profiles unwritable."""
+    from jarvis.canvas import CanvasError
+
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-canon-"))
+    built = build_canvas_tools(
+        client=FakeCanvas(active_courses=CanvasError("offline")), profiles_dir=tmp
+    )
+    tools = {t.name: t for t in built}
+    _run(tools["update_course_profile"], {"course": "PHYS-1000", "body": "offline note"})
+    assert "offline note" in _body(
+        _run(tools["read_course_profile"], {"course": "PHYS-1000"})
+    )

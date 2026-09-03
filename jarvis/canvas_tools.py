@@ -210,6 +210,15 @@ def office_to_text(suffix: str, data: bytes) -> str:
     return ""
 
 
+def _squash(text: str) -> str:
+    """Lowercase and strip everything but letters and digits.
+
+    Course names are written a dozen ways — 'AAM 1730', 'aam-1730',
+    'AAM-1730-01'. Comparing squashed forms makes them all the same key.
+    """
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
 def _safe_filename(name: str) -> str:
     """A Canvas filename reduced to something safe to write locally.
 
@@ -257,10 +266,17 @@ def build_canvas_tools(
         exact = [c for c in named if c["name"].lower() == needle]
         if exact:
             return exact[0], ""
+        # Match on a separator-free form so the way a person writes a course
+        # ("AAM 1730", "aam-1730", "aam1730") all reach the same class, and on
+        # course_code too — Canvas puts the course's real title there
+        # ("Machine Learning - 01"), so a subject name resolves as well.
+        flat = _squash(needle)
         partial = [
             c for c in named
-            if needle in c["name"].lower()
-            or needle in str(c.get("course_code", "")).lower()
+            if flat and (
+                flat in _squash(c["name"])
+                or flat in _squash(str(c.get("course_code", "")))
+            )
         ]
         if len(partial) == 1:
             return partial[0], ""
@@ -269,6 +285,25 @@ def build_canvas_tools(
             return None, f"{name!r} matches several courses: {options}. Be specific."
         available = ", ".join(c["name"] for c in named)
         return None, f"No course matching {name!r}. You are enrolled in: {available}"
+
+    def canonical_course_name(name: str) -> str:
+        """Canvas's own name for a course, for keying its profile.
+
+        A profile filed under whatever string the agent happened to type splits
+        one course's knowledge across several files — 'AAM-1730' and
+        'AAM-1730-01' are the same class but slug differently, and the second
+        run then starts cold and overwrites nothing. Resolving through Canvas
+        first gives every mention of a course the same home.
+
+        Falls back to the given name when Canvas can't be reached, so profiles
+        stay readable offline — which is exactly when they matter most.
+        """
+        if not name:
+            return name
+        course, _error = resolve_course(name)
+        if course and course.get("name"):
+            return str(course["name"])
+        return name
 
     course_arg = {
         "course": {
@@ -291,10 +326,19 @@ def build_canvas_tools(
         named = [c for c in courses if isinstance(c, dict) and c.get("name")]
         if not named:
             return _text("No active courses found in Canvas.")
-        lines = [f"{len(named)} active course(s):"]
+        lines = [
+            f"{len(named)} course(s) Canvas reports as active. Note the term: "
+            "Canvas keeps finished courses in this list, so a course from a "
+            "past term is probably over, not current."
+        ]
         for course in sorted(named, key=lambda c: str(c["name"])):
-            lines.append(f"  - {course['name']}")
-        return _text("\n".join(lines))
+            term = course.get("term")
+            term_name = term.get("name") if isinstance(term, dict) else None
+            title = str(course.get("course_code") or "").strip()
+            suffix = f"  [{term_name}]" if term_name else ""
+            detail = f" — {title}" if title and title != course["name"] else ""
+            lines.append(f"  - {course['name']}{detail}{suffix}")
+        return _text(_clip("\n".join(lines)))
 
     @tool(
         "read_syllabus",
@@ -544,7 +588,7 @@ def build_canvas_tools(
         {"type": "object", "properties": course_arg, "required": ["course"]},
     )
     async def read_course_profile(args: dict) -> dict:
-        name = str(args.get("course", "")).strip()
+        name = canonical_course_name(str(args.get("course", "")).strip())
         if not name:
             return _text("No course name given.", is_error=True)
         profile = profiles.load(name)
@@ -575,7 +619,7 @@ def build_canvas_tools(
         },
     )
     async def update_course_profile(args: dict) -> dict:
-        name = str(args.get("course", "")).strip()
+        name = canonical_course_name(str(args.get("course", "")).strip())
         body = str(args.get("body", ""))
         if not name:
             return _text("No course name given.", is_error=True)

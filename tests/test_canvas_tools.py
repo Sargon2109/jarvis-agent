@@ -13,10 +13,22 @@ from jarvis.canvas_tools import (
     html_to_text,
 )
 
+# Shaped like real Canvas, which is not what you would guess: course_code
+# holds the course's human title, not a short code, and finished courses stay
+# in the active list with only their term to mark them as over.
 COURSES = [
-    {"id": 1, "name": "AAM-1730-01", "course_code": "AAM1730"},
-    {"id": 2, "name": "CSCI-1050-01", "course_code": "CSCI1050"},
-    {"id": 3, "name": "CSCI-2510-01", "course_code": "CSCI2510"},
+    {"id": 1, "name": "AAM-1730-01",
+     "course_code": "Race in Contemporary Horror - 01 (Fall 2026)",
+     "term": {"name": "Fall 2026"}},
+    {"id": 2, "name": "CSCI-1050-01",
+     "course_code": "Introduction to Computer Science: Multimedia - 01 (Fall 2026)",
+     "term": {"name": "Fall 2026"}},
+    {"id": 3, "name": "CSCI-2510-01",
+     "course_code": "Principles of Computing Systems - 01 (Fall 2026)",
+     "term": {"name": "Fall 2026"}},
+    {"id": 4, "name": "MATH-3550-01",
+     "course_code": "Differential Equations - 01 (Summer 2026)",
+     "term": {"name": "Summer 2026"}},
 ]
 
 
@@ -347,3 +359,35 @@ def test_an_image_only_deck_is_reported_not_silently_empty():
     tools = _tools(EmptyDeck(), download_dir=tmp)
     result = _run(tools["fetch_course_file"], {"course": "AAM", "filename": "Scans"})
     assert result.get("is_error") and "PowerPoint deck" in _body(result)
+
+
+# --- course matching against realistic Canvas data ---------------------------
+
+def test_a_course_resolves_however_the_user_spells_it():
+    """People write 'AAM 1730', 'aam-1730', 'aam1730'. All are the same class,
+    and none of them is Canvas's own 'AAM-1730-01'."""
+    tools = _tools()
+    for spelling in ("AAM-1730", "aam 1730", "aam1730", "AAM-1730-01", "Aam1730"):
+        body = _body(_run(tools["read_syllabus"], {"course": spelling}))
+        assert "40% essays" in body, f"{spelling!r} failed to resolve"
+
+
+def test_a_course_resolves_by_its_real_title():
+    """Canvas stores the human title in course_code, so 'Differential
+    Equations' should find MATH-3550 without knowing the number."""
+    body = _body(_run(_tools()["read_syllabus"], {"course": "Differential Equations"}))
+    assert "40% essays" in body
+
+
+def test_listing_shows_the_term_so_finished_courses_are_visible():
+    """Canvas keeps last term's courses in the active list. Without the term
+    shown, a summer course that already ended looks like a current class."""
+    body = _body(_run(_tools()["list_courses"], {}))
+    assert "Fall 2026" in body and "Summer 2026" in body
+    assert "MATH-3550-01" in body
+    assert "past term" in body
+
+
+def test_listing_shows_the_human_title_next_to_the_code():
+    body = _body(_run(_tools()["list_courses"], {}))
+    assert "Race in Contemporary Horror" in body
