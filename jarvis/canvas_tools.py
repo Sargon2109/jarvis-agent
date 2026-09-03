@@ -51,6 +51,18 @@ CANVAS_TOOL_NAMES = (
 #: context on boilerplate instead of reasoning.
 MAX_CHARS = 12_000
 
+#: Cap on the extracted-text file written next to a download. The tool result
+#: is clipped, but the companion file is what the agent reads next — leaving it
+#: uncapped just moves an enormous payload one step downstream.
+MAX_COMPANION_CHARS = 250_000
+
+#: Above this, a file is too big to read in one go. The SDK passes tool results
+#: through a stdio channel with a fixed message ceiling, and one Read of a
+#: multi-megabyte PDF exceeds it — which does not fail politely, it kills the
+#: run and loses everything done so far. Course material crosses this line
+#: routinely: lecture decks of 2MB+ are ordinary.
+LARGE_FILE_BYTES = 1_000_000
+
 
 def qualified(name: str) -> str:
     return f"mcp__{SERVER_NAME}__{name}"
@@ -417,7 +429,21 @@ def build_canvas_tools(
             name = item.get("display_name") or item.get("filename") or "untitled"
             size = item.get("size")
             size_text = f" ({round(size / 1024)} KB)" if isinstance(size, int) else ""
-            lines.append(f"  - {name}{size_text}")
+            # Flag the ones that cannot be read in a single pass, so the agent
+            # plans before it downloads rather than after a failed read has
+            # already ended the run. Office formats are exempt: their text is
+            # extracted and capped here, so their size never reaches the agent.
+            big = ""
+            if isinstance(size, int) and size > LARGE_FILE_BYTES:
+                is_office = any(
+                    name.lower().endswith(ext) for ext in OFFICE_SUFFIXES
+                )
+                big = (
+                    "  [large — text is extracted, so this is fine]"
+                    if is_office
+                    else "  [large — read in page ranges]"
+                )
+            lines.append(f"  - {name}{size_text}{big}")
         return _text(_clip("\n".join(lines)))
 
     @tool(
@@ -497,8 +523,15 @@ def build_canvas_tools(
                 extracted = ""
             if extracted:
                 companion = saved.with_suffix(suffix + ".txt")
+                trimmed = extracted
+                if len(trimmed) > MAX_COMPANION_CHARS:
+                    trimmed = (
+                        trimmed[:MAX_COMPANION_CHARS]
+                        + f"\n\n[...truncated at {MAX_COMPANION_CHARS} characters "
+                        "— the original file has more]"
+                    )
                 try:
-                    companion.write_text(extracted, encoding="utf-8")
+                    companion.write_text(trimmed, encoding="utf-8")
                 except OSError:
                     pass
                 else:
@@ -514,8 +547,21 @@ def build_canvas_tools(
                 is_error=True,
             )
 
+        try:
+            size = saved.stat().st_size
+        except OSError:
+            size = 0
+        if size > LARGE_FILE_BYTES:
+            return _text(
+                f"Saved {label(chosen)!r} to {saved}\n"
+                f"WARNING: this file is {size // 1024} KB — too large to read in "
+                "one go. Reading it whole will exceed the tool-result limit and "
+                "kill this run. Use the Read tool with a page range instead "
+                "(for example pages='1-10'), and read further ranges only if you "
+                "still need them."
+            )
         return _text(
-            f"Saved {label(chosen)!r} to {saved}\n"
+            f"Saved {label(chosen)!r} to {saved} ({size // 1024} KB)\n"
             f"Use the Read tool on that path to read it."
         )
 

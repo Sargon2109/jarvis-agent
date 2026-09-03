@@ -391,3 +391,84 @@ def test_listing_shows_the_term_so_finished_courses_are_visible():
 def test_listing_shows_the_human_title_next_to_the_code():
     body = _body(_run(_tools()["list_courses"], {}))
     assert "Race in Contemporary Horror" in body
+
+
+# --- large files must not blow the tool-result ceiling -----------------------
+
+def test_a_large_file_is_flagged_in_the_listing():
+    """Reading a multi-megabyte PDF whole exceeds the SDK's message limit and
+    kills the run, so the size has to be visible before the download."""
+    from jarvis.canvas_tools import LARGE_FILE_BYTES
+    tools = _tools(FakeCanvas(course_files=[
+        {"display_name": "Textbook.pdf", "url": "https://x/1",
+         "size": LARGE_FILE_BYTES + 1},
+        {"display_name": "Handout.pdf", "url": "https://x/2", "size": 4096},
+    ]))
+    body = _body(_run(tools["list_course_files"], {"course": "AAM"}))
+    assert "Textbook.pdf" in body and "read in page ranges" in body
+    assert body.count("read in page ranges") == 1     # not the small one
+
+
+def test_a_large_office_file_is_not_told_to_use_page_ranges():
+    """Word and PowerPoint text is extracted and capped here, so their size
+    never reaches the agent — advising a page range would be wrong."""
+    from jarvis.canvas_tools import LARGE_FILE_BYTES
+    tools = _tools(FakeCanvas(course_files=[
+        {"display_name": "Ch02 Slides.pptx", "url": "https://x/1",
+         "size": LARGE_FILE_BYTES + 1},
+    ]))
+    body = _body(_run(tools["list_course_files"], {"course": "AAM"}))
+    assert "read in page ranges" not in body
+    assert "text is extracted" in body
+
+
+def test_fetching_a_large_file_warns_instead_of_inviting_a_whole_read():
+    from jarvis.canvas_tools import LARGE_FILE_BYTES
+
+    payload = b"x" * (LARGE_FILE_BYTES + 1000)
+
+    class BigCanvas(FakeCanvas):
+        def course_files(self, course_id):
+            return [{"display_name": "Big.pdf", "url": "https://x/big"}]
+
+        def download_file(self, url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload)
+            return dest
+
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-big-"))
+    tools = _tools(BigCanvas(), download_dir=tmp)
+    body = _body(_run(tools["fetch_course_file"], {"course": "AAM", "filename": "Big"}))
+    assert "too large to read in one go" in body
+    assert "pages=" in body
+
+
+def test_a_small_file_reports_its_size_without_a_warning():
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-small-"))
+    tools = _tools(FakeCanvas(), download_dir=tmp)
+    body = _body(_run(tools["fetch_course_file"], {"course": "AAM", "filename": "Syllabus"}))
+    assert "KB" in body and "too large" not in body
+
+
+def test_the_extracted_text_file_is_capped():
+    """The tool result is clipped, but the companion .txt is what gets read
+    next — leaving it uncapped just moves the huge payload downstream."""
+    from jarvis.canvas_tools import MAX_COMPANION_CHARS
+
+    payload = _make_docx(["word " * (MAX_COMPANION_CHARS // 2)])
+
+    class HugeDocx(FakeCanvas):
+        def course_files(self, course_id):
+            return [{"display_name": "Huge.docx", "url": "https://x/h"}]
+
+        def download_file(self, url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload)
+            return dest
+
+    tmp = Path(tempfile.mkdtemp(prefix="jarvis-huge-"))
+    tools = _tools(HugeDocx(), download_dir=tmp)
+    _run(tools["fetch_course_file"], {"course": "AAM", "filename": "Huge"})
+    written = (tmp / "Huge.docx.txt").read_text()
+    assert len(written) < MAX_COMPANION_CHARS + 200
+    assert "truncated" in written

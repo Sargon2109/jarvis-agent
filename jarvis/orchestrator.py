@@ -43,6 +43,17 @@ DEFAULT_MAX_BUDGET_USD = 3.00
 MAX_TURNS_ENV = "JARVIS_MAX_TURNS"
 MAX_BUDGET_ENV = "JARVIS_MAX_BUDGET_USD"
 
+#: Ceiling on one message between the SDK and its CLI subprocess. The SDK
+#: defaults to 1MB, which a single Read of a large course PDF blows straight
+#: through — and the failure kills the whole run mid-way, losing the work done
+#: so far. Course material is routinely multi-megabyte (a 2.7MB slide deck is
+#: unremarkable), so the default is far too tight for this workload.
+#:
+#: This is a safety net, not the real defense: the file tools cap what they
+#: hand back so a result never gets near this in the first place.
+DEFAULT_MAX_BUFFER_BYTES = 24 * 1024 * 1024
+MAX_BUFFER_ENV = "JARVIS_MAX_BUFFER_BYTES"
+
 
 def _env_cap(env: str, default: float, cast) -> float:
     """Read a numeric cap from the environment, falling back on bad values."""
@@ -173,4 +184,7 @@ def build_orchestrator_options(
         resume=resume,
         max_turns=_positive(max_turns, MAX_TURNS_ENV, DEFAULT_MAX_TURNS, int),
         max_budget_usd=_positive(max_budget_usd, MAX_BUDGET_ENV, DEFAULT_MAX_BUDGET_USD, float),
+        max_buffer_size=int(
+            _positive(None, MAX_BUFFER_ENV, DEFAULT_MAX_BUFFER_BYTES, int)
+        ),
     )
