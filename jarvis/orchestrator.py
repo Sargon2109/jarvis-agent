@@ -92,7 +92,14 @@ def today_line(today: Optional[date] = None) -> str:
     days stays correct.
     """
     today = today or date.today()
-    return f"Today's date is {today.strftime('%A, %B %-d, %Y')} ({today.isoformat()}).\n\n"
+    return (
+        f"Today's date is {today.strftime('%A, %B %-d, %Y')} "
+        f"({today.isoformat()}).\n"
+        "This conversation may span several days. This date is authoritative: "
+        "ignore any earlier statement in the history about what today is, and "
+        "recompute anything relative — 'tomorrow', 'this week', how overdue "
+        "something is — from the date above.\n\n"
+    )
 
 
 def available_agents(

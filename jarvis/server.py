@@ -59,6 +59,7 @@ from .ledger import CostLedger
 from .models import Item
 from .orchestrator import available_agents, build_orchestrator_options
 from .registry import AgentRegistry, RegistryError
+from .session import SessionStore
 from .storage import Store, StoreError, create_store
 from .tools import SERVER_NAME
 
@@ -112,6 +113,7 @@ class JarvisAPI:
         log: Optional[DumpLog] = None,
         ledger: Optional[CostLedger] = None,
         scratch_dir: Path | str | None = None,
+        sessions: Optional[SessionStore] = None,
     ):
         self.store = store or create_store()
         self.registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
@@ -125,11 +127,12 @@ class JarvisAPI:
         #: without this every message would be a fresh amnesiac query() and
         #: "you agreed earlier in this conversation" could never be true.
         self._session_id: Optional[str] = None
-        #: The day that session belongs to. A conversation resumed across a
-        #: date boundary carries the old day's context with it — every
-        #: "tomorrow" and "this week" in the history now means something else.
-        #: Continuity within a day is worth keeping; across days it misleads.
+        #: The day that session was last used, for the idle limit.
         self._session_day: Optional[date] = None
+        #: Where the resumable session id is kept between processes. Without
+        #: this the conversation ended every time the desk was closed or
+        #: restarted, which looked exactly like Jarvis forgetting.
+        self.sessions = sessions or SessionStore()
 
     # --- read ----------------------------------------------------------------
     def state(self, *, stale_days: int = DEFAULT_STALE_DAYS) -> dict:
@@ -327,6 +330,7 @@ class JarvisAPI:
         try:
             self._session_id = None
             self._session_day = None
+            self.sessions.clear()
         finally:
             self._chat_lock.release()
         return {"session": {"active": False}}
@@ -337,16 +341,22 @@ class JarvisAPI:
     ) -> tuple[Optional[str], bool]:
         """The session to resume, and whether a stale one was dropped.
 
-        A conversation resumed across a date boundary brings the old day's
-        context with it: every "tomorrow" and "this week" in that history now
-        points somewhere else. Continuity within a day is worth keeping;
-        across days it actively misleads, so midnight starts a fresh one.
+        Conversations continue across days and across restarts — remembering
+        what was discussed yesterday is most of the value. What ends a thread
+        is silence: past the idle limit the context is no longer worth the
+        cost of re-sending it every turn.
+
+        Dates are not a reason to drop a session. The system prompt states the
+        real date on every run and tells the model to trust it over anything
+        the history says, which is cheaper than forgetting the conversation.
         """
         today = today or date.today()
-        if self._session_id and self._session_day != today:
-            self._session_id = None
-            self._session_day = None
-            return None, True
+        if self._session_id is None:
+            record = self.sessions.load(today=today)
+            if record is None:
+                return None, self._session_day is not None
+            self._session_id = record.session_id
+            self._session_day = record.last_used
         return self._session_id, False
 
     def stream_chat(self, prompt: str, emit: Callable[[dict], None]) -> None:
@@ -391,6 +401,7 @@ class JarvisAPI:
                 # turn; drop it so the next message starts a fresh conversation.
                 self._session_id = None
                 self._session_day = None
+                self.sessions.clear()
             emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         finally:
             self._chat_lock.release()
@@ -424,6 +435,12 @@ class JarvisAPI:
                     # which day it belongs to so it expires at midnight.
                     self._session_id = message.session_id
                     self._session_day = date.today()
+                    try:
+                        self.sessions.save(message.session_id)
+                    except OSError:
+                        # An unwritable state file costs continuity on the next
+                        # restart; it must never fail the run in progress.
+                        pass
                 if message.total_cost_usd is not None:
                     try:
                         self.ledger.append(

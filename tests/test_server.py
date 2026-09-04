@@ -17,6 +17,7 @@ from jarvis.agents import RESERVED_NAMES
 from jarvis.dumps import DumpLog
 from jarvis.ledger import CostLedger
 from jarvis.registry import AgentRegistry
+from jarvis.session import SessionStore
 from jarvis.server import WEB_DIR, JarvisAPI, build_handler
 from jarvis.storage import JSONStore
 
@@ -30,6 +31,9 @@ def _api() -> JarvisAPI:
         DumpLog(tmp / "dumps.jsonl"),
         CostLedger(tmp / "costs.jsonl"),
         scratch_dir=tmp / "scratch",
+        # Injected, or these tests would read and clear the real desk's
+        # conversation — every backend here is isolated for that reason.
+        sessions=SessionStore(tmp / "session.json"),
     )
 
 
@@ -540,46 +544,56 @@ def test_state_reports_busy_while_the_chat_lock_is_held():
     assert api.state()["busy"] is False
 
 
-# --- a conversation must not be resumed across a day boundary ---------------
+# --- conversations continue across days and restarts -------------------------
 
-def test_a_session_from_a_previous_day_is_not_resumed():
-    """Yesterday's conversation carries yesterday's 'today' in its history.
-    Continuity within a day is worth keeping; across days it misleads."""
+def test_a_session_from_a_previous_day_is_still_resumed():
+    """Remembering yesterday is the point. The date is handled in the prompt,
+    which is far cheaper than throwing the conversation away."""
+    from datetime import date
+
+    api = _api()
+    api.sessions.save("yesterdays-thread", today=date(2026, 9, 3))
+    api._session_id = None
+
+    resuming, dropped = api._take_session(today=date(2026, 9, 4))
+    assert resuming == "yesterdays-thread"
+    assert dropped is False
+
+
+def test_a_session_survives_a_restart():
+    """A fresh JarvisAPI is exactly what a server restart produces."""
+    from datetime import date
+
+    api = _api()
+    api.sessions.save("thread-before-restart", today=date(2026, 9, 4))
+
+    restarted = JarvisAPI(
+        store=api.store, registry=api.registry, log=api.log,
+        ledger=api.ledger, sessions=api.sessions,
+    )
+    resuming, _ = restarted._take_session(today=date(2026, 9, 4))
+    assert resuming == "thread-before-restart"
+
+
+def test_a_long_silence_ends_the_conversation():
+    """Resumed forever, a thread re-sends its whole history every turn."""
     from datetime import date, timedelta
+    from jarvis.session import max_idle_days
 
     api = _api()
-    api._session_id = "session-from-yesterday"
-    api._session_day = date(2026, 9, 3)
+    stale = date(2026, 9, 4) - timedelta(days=max_idle_days() + 1)
+    api.sessions.save("ancient-thread", today=stale)
 
-    resuming, rolled_over = api._take_session(today=date(2026, 9, 4))
-    assert resuming is None and rolled_over is True
-    assert api._session_id is None and api._session_day is None
+    resuming, _ = api._take_session(today=date(2026, 9, 4))
+    assert resuming is None
 
 
-def test_a_session_from_the_same_day_is_still_resumed():
+def test_resetting_the_session_forgets_it_on_disk_too():
     from datetime import date
 
     api = _api()
-    api._session_id = "session-from-today"
-    api._session_day = date(2026, 9, 4)
-
-    resuming, rolled_over = api._take_session(today=date(2026, 9, 4))
-    assert resuming == "session-from-today" and rolled_over is False
-
-
-def test_no_session_at_all_is_not_reported_as_a_rollover():
-    from datetime import date
-
-    api = _api()
-    resuming, rolled_over = api._take_session(today=date(2026, 9, 4))
-    assert resuming is None and rolled_over is False
-
-
-def test_resetting_the_session_clears_the_day_too():
-    from datetime import date
-
-    api = _api()
+    api.sessions.save("x", today=date.today())
     api._session_id = "x"
-    api._session_day = date.today()
     api.reset_session()
-    assert api._session_id is None and api._session_day is None
+    assert api._session_id is None
+    assert api.sessions.load() is None
