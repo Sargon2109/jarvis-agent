@@ -9,6 +9,8 @@ first, then delegate*.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
+from datetime import date
 from typing import Optional
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions
@@ -80,15 +82,41 @@ def _positive(explicit, env: str, default: float, cast):
     return cast(_env_cap(env, default, cast))
 
 
+def today_line(today: Optional[date] = None) -> str:
+    """The one sentence that tells a model what day it is.
+
+    A model has no clock. Left untold, it infers the date from whatever the
+    conversation implies — so a resumed session still believes it is the day
+    that session started, and "due tomorrow" quietly means the wrong tomorrow.
+    Every prompt is stamped with this, rebuilt per run so a desk left open for
+    days stays correct.
+    """
+    today = today or date.today()
+    return f"Today's date is {today.strftime('%A, %B %-d, %Y')} ({today.isoformat()}).\n\n"
+
+
 def available_agents(
     registry: Optional[AgentRegistry] = None,
+    *,
+    today: Optional[date] = None,
 ) -> tuple[dict[str, AgentDefinition], dict[str, str]]:
-    """All agents (built-in + registry) and the combined domain -> agent map."""
+    """All agents (built-in + registry) and the combined domain -> agent map.
+
+    Definitions are stamped with the current date as they are handed out. The
+    built-in definitions are module-level and therefore frozen at import, so
+    stamping them here — not at definition time — is what keeps a long-running
+    server from serving yesterday's date forever.
+    """
     registry = registry or AgentRegistry(reserved=RESERVED_NAMES)
     agents = {**BUILTIN_AGENTS, **registry.definitions()}
     domain_map = {**BUILTIN_DOMAIN_MAP, **registry.domain_map()}
     # A domain may only route to an agent that actually exists.
     domain_map = {d: n for d, n in domain_map.items() if n in agents}
+    stamp = today_line(today)
+    agents = {
+        name: replace(definition, prompt=stamp + (definition.prompt or ""))
+        for name, definition in agents.items()
+    }
     return agents, domain_map
 
 
@@ -97,10 +125,13 @@ def _routing_table(domain_map: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(domain_map: dict[str, str]) -> str:
+def build_system_prompt(
+    domain_map: dict[str, str], *, today: Optional[date] = None
+) -> str:
     """The orchestrator's instructions, including the live routing table."""
     return (
-        "You are Jarvis, a personal chief of staff. You orchestrate the user's "
+        today_line(today)
+        + "You are Jarvis, a personal chief of staff. You orchestrate the user's "
         "work; you do not do it yourself.\n\n"
         "When the user dumps their thoughts:\n\n"
         "1. CAPTURE FIRST. Break the dump into individual items and save each one "

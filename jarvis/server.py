@@ -125,6 +125,11 @@ class JarvisAPI:
         #: without this every message would be a fresh amnesiac query() and
         #: "you agreed earlier in this conversation" could never be true.
         self._session_id: Optional[str] = None
+        #: The day that session belongs to. A conversation resumed across a
+        #: date boundary carries the old day's context with it — every
+        #: "tomorrow" and "this week" in the history now means something else.
+        #: Continuity within a day is worth keeping; across days it misleads.
+        self._session_day: Optional[date] = None
 
     # --- read ----------------------------------------------------------------
     def state(self, *, stale_days: int = DEFAULT_STALE_DAYS) -> dict:
@@ -321,11 +326,29 @@ class JarvisAPI:
             return {"session": {"active": True}, "busy": True}
         try:
             self._session_id = None
+            self._session_day = None
         finally:
             self._chat_lock.release()
         return {"session": {"active": False}}
 
     # --- chat ----------------------------------------------------------------
+    def _take_session(
+        self, *, today: Optional[date] = None
+    ) -> tuple[Optional[str], bool]:
+        """The session to resume, and whether a stale one was dropped.
+
+        A conversation resumed across a date boundary brings the old day's
+        context with it: every "tomorrow" and "this week" in that history now
+        points somewhere else. Continuity within a day is worth keeping;
+        across days it actively misleads, so midnight starts a fresh one.
+        """
+        today = today or date.today()
+        if self._session_id and self._session_day != today:
+            self._session_id = None
+            self._session_day = None
+            return None, True
+        return self._session_id, False
+
     def stream_chat(self, prompt: str, emit: Callable[[dict], None]) -> None:
         """Run one orchestrator turn, pushing an event dict per SDK message.
 
@@ -344,11 +367,15 @@ class JarvisAPI:
             })
             return
 
-        resuming = self._session_id
+        resuming, rolled_over = self._take_session()
         try:
             dump = self.log.append(prompt, source="llm")
             emit({"type": "dump", "id": dump.id})
-            emit({"type": "session", "resumed": resuming is not None})
+            emit({
+                "type": "session",
+                "resumed": resuming is not None,
+                "new_day": rolled_over,
+            })
             options = build_orchestrator_options(
                 store=self.store,
                 registry=self.registry,
@@ -363,6 +390,7 @@ class JarvisAPI:
                 # A stale or unloadable session must not wedge every later
                 # turn; drop it so the next message starts a fresh conversation.
                 self._session_id = None
+                self._session_day = None
             emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         finally:
             self._chat_lock.release()
@@ -392,8 +420,10 @@ class JarvisAPI:
                         emit(self._tool_event(block, delegations, speaker))
             elif isinstance(message, ResultMessage):
                 if message.session_id:
-                    # Continue this conversation on the next turn.
+                    # Continue this conversation on the next turn, remembering
+                    # which day it belongs to so it expires at midnight.
                     self._session_id = message.session_id
+                    self._session_day = date.today()
                 if message.total_cost_usd is not None:
                     try:
                         self.ledger.append(

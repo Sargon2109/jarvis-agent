@@ -538,3 +538,48 @@ def test_state_reports_busy_while_the_chat_lock_is_held():
     finally:
         api._chat_lock.release()
     assert api.state()["busy"] is False
+
+
+# --- a conversation must not be resumed across a day boundary ---------------
+
+def test_a_session_from_a_previous_day_is_not_resumed():
+    """Yesterday's conversation carries yesterday's 'today' in its history.
+    Continuity within a day is worth keeping; across days it misleads."""
+    from datetime import date, timedelta
+
+    api = _api()
+    api._session_id = "session-from-yesterday"
+    api._session_day = date(2026, 9, 3)
+
+    resuming, rolled_over = api._take_session(today=date(2026, 9, 4))
+    assert resuming is None and rolled_over is True
+    assert api._session_id is None and api._session_day is None
+
+
+def test_a_session_from_the_same_day_is_still_resumed():
+    from datetime import date
+
+    api = _api()
+    api._session_id = "session-from-today"
+    api._session_day = date(2026, 9, 4)
+
+    resuming, rolled_over = api._take_session(today=date(2026, 9, 4))
+    assert resuming == "session-from-today" and rolled_over is False
+
+
+def test_no_session_at_all_is_not_reported_as_a_rollover():
+    from datetime import date
+
+    api = _api()
+    resuming, rolled_over = api._take_session(today=date(2026, 9, 4))
+    assert resuming is None and rolled_over is False
+
+
+def test_resetting_the_session_clears_the_day_too():
+    from datetime import date
+
+    api = _api()
+    api._session_id = "x"
+    api._session_day = date.today()
+    api.reset_session()
+    assert api._session_id is None and api._session_day is None
