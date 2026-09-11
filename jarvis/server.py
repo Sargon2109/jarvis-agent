@@ -83,6 +83,34 @@ MAX_BODY_BYTES = 1_000_000
 _TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
 
 
+def _stop_hint(reason: Optional[str], cost: Optional[float]) -> Optional[str]:
+    """Turn a terminal reason into something the user can act on.
+
+    "Run stopped early: budget" says what happened but not what to do, and the
+    two useful responses are quite different: a cap that is simply too low for
+    the task, versus a task that should have been split up.
+    """
+    if not reason:
+        return None
+    lowered = reason.lower()
+    if "budget" in lowered:
+        spent = f"${cost:.2f}" if cost is not None else "the cap"
+        return (
+            f"This run stopped at its spending cap ({spent}). The work it "
+            "already finished was saved. Either give it a smaller slice — one "
+            "course rather than all of them — or raise the cap with "
+            "JARVIS_MAX_BUDGET_USD. A long-running conversation also costs "
+            "more every turn, so New Session helps if this one has gone on a "
+            "while."
+        )
+    if "turn" in lowered:
+        return (
+            "This run hit its turn limit. Narrow the request, or raise "
+            "JARVIS_MAX_TURNS."
+        )
+    return None
+
+
 # --- serialization -----------------------------------------------------------
 
 def _item_json(item: Item) -> dict:
@@ -336,6 +364,28 @@ class JarvisAPI:
         return {"session": {"active": False}}
 
     # --- chat ----------------------------------------------------------------
+    def _record_spend(self, spend: dict) -> bool:
+        """Write one ledger entry for a finished run. Returns whether it did.
+
+        Exactly one entry per run is the whole point. ``total_cost_usd`` on a
+        ResultMessage is the run's running total, and a run that delegates
+        emits several of them, so appending as they arrived counted the same
+        dollars again and again — the ledger read about 30% high.
+        """
+        cost = spend.get("cost")
+        if cost is None:
+            return False
+        try:
+            self.ledger.append(
+                cost,
+                turns=spend.get("turns") or 0,
+                duration_ms=spend.get("duration_ms") or 0,
+                dump_id=spend.get("dump_id"),
+            )
+        except OSError:
+            return False  # bookkeeping must never kill a finished run
+        return True
+
     def _take_session(
         self, *, today: Optional[date] = None
     ) -> tuple[Optional[str], bool]:
@@ -378,6 +428,9 @@ class JarvisAPI:
             return
 
         resuming, rolled_over = self._take_session()
+        # Filled in as ResultMessages arrive; written to the ledger exactly
+        # once below, however the run ends.
+        spend: dict = {}
         try:
             dump = self.log.append(prompt, source="llm")
             emit({"type": "dump", "id": dump.id})
@@ -392,7 +445,9 @@ class JarvisAPI:
                 dump_id=dump.id,
                 resume=resuming,
             )
-            asyncio.run(self._arun(prompt, options, emit, dump_id=dump.id))
+            asyncio.run(
+                self._arun(prompt, options, emit, dump_id=dump.id, spend=spend)
+            )
         except (DumpLogError, StoreError, RegistryError) as exc:
             emit({"type": "error", "message": str(exc)})
         except Exception as exc:  # noqa: BLE001 - surface it rather than hang the UI
@@ -404,6 +459,7 @@ class JarvisAPI:
                 self.sessions.clear()
             emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         finally:
+            self._record_spend(spend)
             self._chat_lock.release()
             emit({"type": "end"})
 
@@ -413,6 +469,7 @@ class JarvisAPI:
         options,
         emit: Callable[[dict], None],
         dump_id: Optional[str] = None,
+        spend: Optional[dict] = None,
     ) -> None:
         """Translate the SDK's message stream into front-end events."""
         # tool_use_id -> specialist name, so a subagent's output can be attributed
@@ -441,18 +498,21 @@ class JarvisAPI:
                         # An unwritable state file costs continuity on the next
                         # restart; it must never fail the run in progress.
                         pass
-                if message.total_cost_usd is not None:
-                    try:
-                        self.ledger.append(
-                            message.total_cost_usd,
-                            turns=message.num_turns,
-                            duration_ms=message.duration_ms,
-                            dump_id=dump_id,
-                        )
-                    except OSError:
-                        pass  # bookkeeping must never kill a finished run
+                if message.total_cost_usd is not None and spend is not None:
+                    # total_cost_usd is the run's RUNNING total, not this
+                    # message's share, and a delegating run emits several
+                    # ResultMessages. Appending each one counted the same
+                    # dollars repeatedly; keep only the latest and record it
+                    # once when the run ends.
+                    spend["cost"] = message.total_cost_usd
+                    spend["turns"] = message.num_turns
+                    spend["duration_ms"] = message.duration_ms
+                    spend["dump_id"] = dump_id
                 emit({
                     "type": "result",
+                    "hint": _stop_hint(
+                        message.terminal_reason, message.total_cost_usd
+                    ),
                     "cost": message.total_cost_usd,
                     "turns": message.num_turns,
                     "duration_ms": message.duration_ms,

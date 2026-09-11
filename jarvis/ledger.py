@@ -116,12 +116,39 @@ class CostLedger:
             return []
         return entries
 
+    @staticmethod
+    def _sum(entries: list[CostEntry]) -> float:
+        """Add up entries, counting each run once.
+
+        Entries written before the desk learned that ``total_cost_usd`` is a
+        *running* total contain several rows per run, each a larger snapshot of
+        the same spend. Summing them counts the same dollars repeatedly — the
+        historical ledger reads about 30% high.
+
+        Rows sharing a dump_id therefore collapse to their largest value, which
+        is that run's final total. Rows without a dump_id can't be grouped and
+        count individually. New entries are written one per run, so this is a
+        no-op going forward and a correction for what is already on disk.
+        """
+        largest: dict[str, float] = {}
+        loose = 0.0
+        for entry in entries:
+            if entry.dump_id:
+                previous = largest.get(entry.dump_id)
+                if previous is None or entry.cost_usd > previous:
+                    largest[entry.dump_id] = entry.cost_usd
+            else:
+                loose += entry.cost_usd
+        return loose + sum(largest.values())
+
     def total(self) -> float:
         """Everything ever spent, in USD."""
-        return sum(e.cost_usd for e in self.all())
+        return self._sum(self.all())
 
     def month_total(self, now: Optional[datetime] = None) -> float:
         """Spend in the current UTC calendar month."""
         now = now or datetime.now(timezone.utc)
         prefix = f"{now.year:04d}-{now.month:02d}"
-        return sum(e.cost_usd for e in self.all() if e.created_at.startswith(prefix))
+        return self._sum(
+            [e for e in self.all() if e.created_at.startswith(prefix)]
+        )

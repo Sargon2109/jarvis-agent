@@ -597,3 +597,62 @@ def test_resetting_the_session_forgets_it_on_disk_too():
     api.reset_session()
     assert api._session_id is None
     assert api.sessions.load() is None
+
+
+# --- a run costs what it costs, once -----------------------------------------
+
+def test_a_run_is_billed_exactly_once():
+    """total_cost_usd is the run's RUNNING total and a delegating run emits
+    several ResultMessages. Appending each one billed the same dollars over
+    and over — the ledger read about 30% high."""
+    api = _api()
+    spend = {}
+    # Three ResultMessages arriving during one run, running total climbing.
+    for running in (0.1887, 1.2750, 3.0336):
+        spend["cost"] = running
+        spend["turns"] = 2
+        spend["duration_ms"] = 1000
+        spend["dump_id"] = "run-1"
+    assert api._record_spend(spend) is True
+
+    entries = api.ledger.all() if hasattr(api.ledger, "all") else None
+    assert abs(api.ledger.total() - 3.0336) < 1e-9
+    if entries is not None:
+        assert len(entries) == 1
+
+
+def test_a_run_that_produced_no_result_is_not_billed():
+    api = _api()
+    assert api._record_spend({}) is False
+    assert api.ledger.total() == 0
+
+
+def test_a_stopped_run_is_still_billed_for_what_it_used():
+    """Hitting the budget cap must not lose the accounting for the run."""
+    api = _api()
+    assert api._record_spend({"cost": 3.0336, "dump_id": "capped"}) is True
+    assert abs(api.ledger.total() - 3.0336) < 1e-9
+
+
+# --- a stopped run should say what to do about it ----------------------------
+
+def test_a_budget_stop_explains_the_options():
+    from jarvis.server import _stop_hint
+
+    hint = _stop_hint("budget_exceeded", 3.0336)
+    assert "$3.03" in hint
+    assert "already finished was saved" in hint
+    assert "JARVIS_MAX_BUDGET_USD" in hint
+
+
+def test_a_turn_limit_stop_points_at_the_turn_cap():
+    from jarvis.server import _stop_hint
+
+    assert "JARVIS_MAX_TURNS" in _stop_hint("max_turns", None)
+
+
+def test_a_normal_completion_gets_no_hint():
+    from jarvis.server import _stop_hint
+
+    assert _stop_hint("completed", 0.05) is None
+    assert _stop_hint(None, 0.05) is None
