@@ -101,3 +101,67 @@ def test_stamping_the_date_does_not_disturb_an_agents_tools():
     agents, _ = available_agents()
     for definition in agents.values():
         assert definition.tools, "stamping must not drop the tool allowlist"
+
+
+# --- work products must survive the trip back --------------------------------
+
+def test_specialists_are_told_the_deliverable_is_a_file():
+    """A specialist that compresses a draft into its 2-4 sentence report
+    produces nothing: the reply is transient and the draft never existed."""
+    from jarvis.agents.base import SHARED_CONVENTIONS
+
+    assert "write it IN FULL to a file" in SHARED_CONVENTIONS
+    assert "receipt, not the work itself" in SHARED_CONVENTIONS
+
+
+def test_specialists_are_told_to_carry_source_detail_into_the_file():
+    from jarvis.agents.base import SHARED_CONVENTIONS
+
+    assert "nobody after you can see it" in SHARED_CONVENTIONS
+
+
+def test_the_orchestrator_is_told_not_to_split_reading_from_writing():
+    """Each Task starts a blank context, so 'read the rubric' and 'write the
+    paper' as separate calls leaves the writer working from a paraphrase."""
+    from jarvis.orchestrator import build_system_prompt
+
+    prompt = build_system_prompt({})
+    assert "blank context" in prompt
+    assert "never split" in prompt.lower()
+    assert "put those paths in the instruction" in prompt
+
+
+def test_every_specialist_carries_conventions_of_some_kind():
+    """writer and researcher were raw AgentDefinitions that bypassed
+    build_agent, so they carried no conventions at all — and writer is the
+    agent most likely to be handed a draft."""
+    from jarvis.orchestrator import available_agents
+
+    agents, _ = available_agents()
+    produces = "receipt, not the work itself"
+    readonly = "only your reply"
+    for name, definition in agents.items():
+        prompt = definition.prompt or ""
+        assert produces in prompt or readonly in prompt, name
+
+
+def test_the_writer_carries_the_file_conventions():
+    from jarvis.agents.writer import writer_agent
+
+    assert "receipt, not the work itself" in writer_agent.prompt
+
+
+def test_the_read_only_researcher_is_told_its_reply_is_all_that_survives():
+    from jarvis.agents.researcher import researcher_agent
+
+    assert "only your reply" in researcher_agent.prompt
+    assert "Write" not in (researcher_agent.tools or [])
+
+
+def test_the_writer_is_steered_away_from_coursework():
+    """It has no Canvas tools, so a rubric-graded draft handed to it is
+    written against a guess."""
+    from jarvis.agents.writer import writer_agent
+
+    assert "canvas specialist" in writer_agent.description
+    assert not any("canvas" in t for t in (writer_agent.tools or []))
