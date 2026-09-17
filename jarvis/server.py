@@ -61,6 +61,7 @@ from .orchestrator import available_agents, build_orchestrator_options
 from .registry import AgentRegistry, RegistryError
 from .session import SessionStore
 from .storage import Store, StoreError, create_store
+from .uploads import MAX_UPLOAD_BYTES, UploadError, UploadStore, describe_for_prompt
 from .tools import SERVER_NAME
 
 #: Where the single-page front end lives.
@@ -78,6 +79,10 @@ LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
 #: Cap on request bodies. A dump is text you typed; a megabyte is a novel.
 MAX_BODY_BYTES = 1_000_000
+
+#: Uploads travel base64 inside JSON, which inflates them by about a third,
+#: so the upload route needs its own ceiling rather than the prose one.
+MAX_UPLOAD_BODY_BYTES = int(MAX_UPLOAD_BYTES * 1.4) + 4096
 
 #: MCP tool-name prefix to strip when labelling store calls in the feed.
 _TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
@@ -148,6 +153,8 @@ class JarvisAPI:
         self.log = log or DumpLog()
         self.ledger = ledger or CostLedger()
         self.scratch_dir = Path(scratch_dir) if scratch_dir is not None else DEFAULT_SCRATCH_DIR
+        #: Files the user hands over — rubrics, sample papers, readings.
+        self.uploads = UploadStore(self.scratch_dir)
         #: One chat turn at a time. Two orchestrator runs at once would
         #: interleave confusingly even now that the store itself is locked.
         self._chat_lock = threading.Lock()
@@ -327,6 +334,34 @@ class JarvisAPI:
                         .isoformat(timespec="seconds"),
         }
 
+    # --- uploads -------------------------------------------------------------
+    def list_uploads(self) -> dict:
+        """Everything the user has handed to Jarvis."""
+        return {"uploads": [u.to_dict() for u in self.uploads.all()]}
+
+    def save_upload(self, payload: dict) -> dict:
+        """Store one uploaded file. Bytes arrive base64 inside JSON."""
+        import base64
+        import binascii
+
+        filename = str(payload.get("filename") or "").strip()
+        if not filename:
+            raise ValueError("no filename given")
+        raw = payload.get("content_base64")
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("no file content given")
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"could not decode that file: {exc}") from exc
+        upload = self.uploads.save(filename, data)
+        return {"upload": upload.to_dict()}
+
+    def remove_upload(self, name: str) -> dict:
+        if not self.uploads.remove(name):
+            raise LookupError(f"no upload named {name!r}")
+        return {"removed": name}
+
     # --- canvas --------------------------------------------------------------
     def sync_canvas(self, *, within_days: int = CANVAS_WITHIN_DAYS,
                     dry_run: bool = False) -> dict:
@@ -414,7 +449,13 @@ class JarvisAPI:
             self._session_day = record.last_used
         return self._session_id, False
 
-    def stream_chat(self, prompt: str, emit: Callable[[dict], None]) -> None:
+    def stream_chat(
+        self,
+        prompt: str,
+        emit: Callable[[dict], None],
+        *,
+        attachments: Optional[list] = None,
+    ) -> None:
         """Run one orchestrator turn, pushing an event dict per SDK message.
 
         The dump is recorded *before* the model runs, matching ``main.py``: your
@@ -437,8 +478,21 @@ class JarvisAPI:
         # once below, however the run ends.
         spend: dict = {}
         try:
+            # The dump records what the user actually typed. The attachment
+            # note is appended only to what the model sees, so the log stays a
+            # faithful record of their words rather than of our plumbing.
             dump = self.log.append(prompt, source="llm")
             emit({"type": "dump", "id": dump.id})
+            attached = [
+                found
+                for name in (attachments or [])
+                if (found := self.uploads.resolve(str(name))) is not None
+            ]
+            if attached:
+                emit({
+                    "type": "attachments",
+                    "files": [u.name for u in attached],
+                })
             emit({
                 "type": "session",
                 "resumed": resuming is not None,
@@ -451,7 +505,10 @@ class JarvisAPI:
                 resume=resuming,
             )
             asyncio.run(
-                self._arun(prompt, options, emit, dump_id=dump.id, spend=spend)
+                self._arun(
+                    prompt + describe_for_prompt(attached),
+                    options, emit, dump_id=dump.id, spend=spend,
+                )
             )
         except (DumpLogError, StoreError, RegistryError) as exc:
             emit({"type": "error", "message": str(exc)})
@@ -623,11 +680,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _error(self, status: int, message: str) -> None:
         self._json({"error": message}, status)
 
-    def _body(self) -> dict:
+    def _body(self, limit: int = MAX_BODY_BYTES) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if not length:
             return {}
-        if length > MAX_BODY_BYTES:
+        if length > limit:
             raise ValueError("request body too large")
         try:
             return json.loads(self.rfile.read(length).decode("utf-8")) or {}
@@ -711,6 +768,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._error(500, str(exc))
         if path == "/api/system":
             return self._json(self.api.system_stats())
+        if path == "/api/uploads":
+            return self._json(self.api.list_uploads())
         if path == "/api/scratch":
             return self._json(self.api.scratch_files())
         if path.startswith("/api/scratch/"):
@@ -734,6 +793,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(self.api.add_item(self._body()))
             if path == "/api/dumps":
                 return self._json(self.api.save_dump(self._body().get("text", "")))
+            if path == "/api/upload":
+                return self._json(
+                    self.api.save_upload(self._body(MAX_UPLOAD_BODY_BYTES))
+                )
             if path == "/api/session/reset":
                 return self._json(self.api.reset_session())
             if path == "/api/canvas/sync":
@@ -749,7 +812,8 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json(self.api.remove_item(item_id))
         except LookupError as exc:
             return self._error(404, str(exc))
-        except (ValueError, StoreError, RegistryError, DumpLogError, CanvasError) as exc:
+        except (ValueError, StoreError, RegistryError, DumpLogError,
+                CanvasError, UploadError) as exc:
             return self._error(400, str(exc))
         return self._error(404, "not found")
 
@@ -765,7 +829,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_chat(self) -> None:
         """Stream one orchestrator turn to the browser as Server-Sent Events."""
         try:
-            prompt = self._body().get("message", "")
+            payload = self._body()
+            prompt = payload.get("message", "")
+            attachments = payload.get("attachments") or []
         except ValueError as exc:
             return self._error(400, str(exc))
 
@@ -784,7 +850,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            self.api.stream_chat(prompt, emit)
+            self.api.stream_chat(prompt, emit, attachments=attachments)
         except (BrokenPipeError, ConnectionResetError):
             # The user closed the tab mid-run. The dump and every captured item
             # are already on disk, so there is nothing to recover.

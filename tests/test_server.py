@@ -656,3 +656,86 @@ def test_a_normal_completion_gets_no_hint():
 
     assert _stop_hint("completed", 0.05) is None
     assert _stop_hint(None, 0.05) is None
+
+
+# --- upload endpoints --------------------------------------------------------
+
+def test_upload_round_trips_through_the_api():
+    import base64
+    api = _api()
+    payload = {
+        "filename": "rubric.txt",
+        "content_base64": base64.b64encode(b"Thesis: 30 points").decode(),
+    }
+    saved = api.save_upload(payload)["upload"]
+    assert saved["name"] == "rubric.txt"
+    assert [u["name"] for u in api.list_uploads()["uploads"]] == ["rubric.txt"]
+
+
+def test_upload_rejects_a_missing_filename_or_body():
+    api = _api()
+    for payload in ({"content_base64": "eA=="}, {"filename": "x.txt"}):
+        raised = False
+        try:
+            api.save_upload(payload)
+        except ValueError:
+            raised = True
+        assert raised, payload
+
+
+def test_upload_rejects_content_that_is_not_base64():
+    api = _api()
+    raised = False
+    try:
+        api.save_upload({"filename": "x.txt", "content_base64": "not base64!!"})
+    except ValueError as exc:
+        raised = "could not decode" in str(exc)
+    assert raised
+
+
+def test_removing_an_unknown_upload_is_a_lookup_error():
+    api = _api()
+    raised = False
+    try:
+        api.remove_upload("nope.txt")
+    except LookupError:
+        raised = True
+    assert raised
+
+
+def test_attachments_reach_the_model_but_not_the_dump():
+    """The dump is a record of what the user typed; the attachment note is
+    plumbing and belongs only in what the model sees."""
+    import base64
+    api = _api()
+    api.save_upload({
+        "filename": "rubric.txt",
+        "content_base64": base64.b64encode(b"Thesis: 30").decode(),
+    })
+    seen = {}
+
+    async def _capture(prompt, *a, **k):
+        seen["prompt"] = prompt
+
+    api._arun = _capture  # type: ignore
+
+    events = []
+    api.stream_chat("write my paper", events.append, attachments=["rubric.txt"])
+
+    assert api.log.all()[0].text == "write my paper"      # dump is verbatim
+    assert "write my paper" in seen["prompt"]
+    assert "rubric.txt" in seen["prompt"]                 # but the model is told
+    attach_events = [e for e in events if e.get("type") == "attachments"]
+    assert attach_events and attach_events[0]["files"] == ["rubric.txt"]
+
+
+def test_an_unknown_attachment_is_ignored_rather_than_failing_the_turn():
+    api = _api()
+    async def _noop(prompt, *a, **k):
+        return None
+
+    api._arun = _noop  # type: ignore
+    events = []
+    api.stream_chat("hello", events.append, attachments=["ghost.txt"])
+    assert not [e for e in events if e.get("type") == "attachments"]
+    assert not [e for e in events if e.get("type") == "error"]

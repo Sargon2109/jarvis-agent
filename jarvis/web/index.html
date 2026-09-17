@@ -221,6 +221,17 @@ main{flex:1;display:grid;grid-template-columns:236px minmax(0,1fr) 348px;gap:14p
 @keyframes bounce{0%,80%,100%{opacity:.22}40%{opacity:1}}
 
 .composer{border-top:1px solid var(--line);padding:11px 14px;background:rgba(3,10,17,.6);flex-shrink:0}
+.attached{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:rgba(0,229,255,.08);
+  border:1px solid var(--line-2);padding:3px 8px;font-size:10px;color:var(--cyan-2);
+  max-width:280px}
+.chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip .x{background:none;border:none;color:var(--faint);cursor:pointer;font-family:var(--mono);
+  font-size:12px;line-height:1;padding:0}
+.chip .x:hover{color:var(--red)}
+.dropzone{position:fixed;inset:0;z-index:50;background:rgba(0,20,30,.85);
+  border:2px dashed var(--cyan);display:flex;align-items:center;justify-content:center;
+  color:var(--cyan);font-size:15px;letter-spacing:.2em;text-transform:uppercase}
 .cwrap{display:flex;gap:10px;align-items:flex-end}
 textarea{
   flex:1;background:rgba(0,20,32,.6);border:1px solid var(--line);color:var(--text);
@@ -428,13 +439,17 @@ button{font-family:var(--mono);cursor:pointer}
       </div>
       <div class="feed" id="feed" role="log" aria-live="polite"></div>
       <div class="composer">
+        <div id="attached" class="attached" hidden></div>
         <div class="cwrap">
           <textarea id="input" rows="1" placeholder="Dump whatever's on your mind…"
                     aria-label="Message to Jarvis"></textarea>
+          <button id="clip" class="mic" title="Attach a rubric, sample paper, or reading"
+                  aria-label="Attach files">CLIP</button>
           <button id="mic" class="mic" title="Talk instead of type" aria-label="Voice input">MIC</button>
           <button id="send" class="primary">Transmit</button>
         </div>
-        <div class="hint">Enter to send · Shift+Enter for a new line · captured before anything runs</div>
+        <input type="file" id="picker" multiple hidden>
+        <div class="hint">Enter to send · Shift+Enter for a new line · drop files anywhere to attach</div>
       </div>
     </div>
 
@@ -480,6 +495,8 @@ button{font-family:var(--mono);cursor:pointer}
 <script>
 const $ = s => document.querySelector(s);
 const feed = $('#feed'), input = $('#input'), sendBtn = $('#send');
+const picker = $('#picker'), attachedEl = $('#attached');
+let attached = [];   // names of files uploaded and waiting to be sent
 let sessionCost = 0, busy = false, serverBusy = false, state = null;
 
 /* ---------- clock ---------- */
@@ -974,7 +991,7 @@ async function send() {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, attachments: attached }),
     });
     if (!res.ok || !res.body) throw new Error('server returned ' + res.status);
 
@@ -988,6 +1005,9 @@ async function send() {
           // one, the run never started (usually another run holds the lock),
           // and the message must go back in the box rather than vanish.
           if (ev.type === 'dump') started = true;
+          // Cleared only once the run has actually taken them, so a refused
+          // message keeps its attachments alongside its restored text.
+          if (ev.type === 'attachments') { attached = []; renderAttached(); }
           onEvent(ev);
         } catch (_) {}
       }
@@ -1033,6 +1053,85 @@ input.addEventListener('keydown', e => {
     e.preventDefault(); send();
   }
 });
+
+/* ---------- attachments ---------- */
+function renderAttached() {
+  attachedEl.hidden = attached.length === 0;
+  attachedEl.innerHTML = attached.map(n =>
+    `<span class="chip"><span class="nm">${esc(n)}</span>` +
+    `<button class="x" data-drop="${esc(n)}" title="Remove">&times;</button></span>`
+  ).join('');
+}
+
+attachedEl.addEventListener('click', e => {
+  const btn = e.target.closest('[data-drop]');
+  if (!btn) return;
+  attached = attached.filter(n => n !== btn.dataset.drop);
+  renderAttached();
+});
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    // readAsDataURL gives "data:<type>;base64,<payload>" — the server wants
+    // only the payload, so everything up to the first comma is dropped.
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(new Error('could not read ' + file.name));
+    r.readAsDataURL(file);
+  });
+}
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    try {
+      const content = await readAsBase64(file);
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, content_base64: content }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('server returned ' + res.status));
+      const name = data.upload.name;
+      if (!attached.includes(name)) attached.push(name);
+      renderAttached();
+    } catch (e) {
+      notice('Could not attach ' + file.name + ': ' + e.message);
+    }
+  }
+}
+
+$('#clip').addEventListener('click', () => picker.click());
+picker.addEventListener('change', () => {
+  if (picker.files.length) uploadFiles([...picker.files]);
+  picker.value = '';          // so re-picking the same file still fires
+});
+
+/* Drag anywhere over the window to attach. */
+let dragDepth = 0, zone = null;
+window.addEventListener('dragover', e => { e.preventDefault(); });
+window.addEventListener('dragenter', e => {
+  e.preventDefault();
+  if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  if (++dragDepth === 1) {
+    zone = document.createElement('div');
+    zone.className = 'dropzone';
+    zone.textContent = 'Drop to attach';
+    document.body.appendChild(zone);
+  }
+});
+window.addEventListener('dragleave', e => {
+  e.preventDefault();
+  if (--dragDepth <= 0) { dragDepth = 0; if (zone) { zone.remove(); zone = null; } }
+});
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  if (zone) { zone.remove(); zone = null; }
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length) uploadFiles([...files]);
+});
+
 sendBtn.addEventListener('click', send);
 
 window.addEventListener('beforeunload', e => {
