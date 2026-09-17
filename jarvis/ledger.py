@@ -43,6 +43,15 @@ class CostEntry:
     turns: int = 0
     duration_ms: int = 0
     dump_id: Optional[str] = None  # the brain-dump that triggered the spend
+    # Token counts, so a bill can be explained rather than just reported. A
+    # run's price is almost entirely input: the fixed tool-schema preamble,
+    # the conversation so far, and any document text pulled in. Older entries
+    # predate these fields and carry zeros.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    agents: int = 0            # delegations; each one is a fresh context
 
     @classmethod
     def create(
@@ -52,6 +61,11 @@ class CostEntry:
         turns: int = 0,
         duration_ms: int = 0,
         dump_id: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        agents: int = 0,
     ) -> "CostEntry":
         return cls(
             id=uuid.uuid4().hex[:8],
@@ -60,7 +74,16 @@ class CostEntry:
             turns=turns,
             duration_ms=duration_ms,
             dump_id=dump_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            agents=agents,
         )
+
+    def context_tokens(self) -> int:
+        """Everything the model had to read for this run."""
+        return self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
 
     @classmethod
     def from_dict(cls, data: dict) -> "CostEntry":
@@ -86,10 +109,18 @@ class CostLedger:
         turns: int = 0,
         duration_ms: int = 0,
         dump_id: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        agents: int = 0,
     ) -> CostEntry:
         """Record one run's cost. OSError propagates; callers decide how loud to be."""
         entry = CostEntry.create(
-            cost_usd, turns=turns, duration_ms=duration_ms, dump_id=dump_id
+            cost_usd, turns=turns, duration_ms=duration_ms, dump_id=dump_id,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens, agents=agents,
         )
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)

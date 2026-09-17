@@ -42,6 +42,7 @@ from .promotion import (
     render_candidates,
 )
 from .registry import AgentRegistry, RegistryError
+from .costs import build_report
 from .doctor import run_doctor
 from .notify import NotifyState, run_notify
 from .scheduling import DEFAULT_TIME, build_notify_plan, build_plan
@@ -138,6 +139,8 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="show what would be sent without sending or recording")
 
     sub.add_parser("doctor", help="check every data file for corruption; reports, never repairs")
+    costs_p = sub.add_parser("costs", help="where the money went: cost per run and why")
+    costs_p.add_argument("--top", type=int, default=10, help="how many runs to list")
 
     p_migrate = sub.add_parser("migrate-store",
                                help="copy all items to a new store file (e.g. plate.db for SQLite)")
@@ -354,6 +357,11 @@ def _cmd_doctor(store: Store, args: argparse.Namespace) -> int:
     return 0 if report.ok() else 1
 
 
+def _cmd_costs(store: Store, args: argparse.Namespace) -> int:
+    print(build_report(top=max(1, args.top)))
+    return 0
+
+
 def _cmd_migrate_store(store: Store, args: argparse.Namespace) -> int:
     target = create_store(args.target)
     count = migrate_items(store, target)
@@ -399,6 +407,7 @@ _HANDLERS = {
     "canvas": _cmd_canvas,
     "notify": _cmd_notify,
     "doctor": _cmd_doctor,
+    "costs": _cmd_costs,
     "migrate-store": _cmd_migrate_store,
 }
 

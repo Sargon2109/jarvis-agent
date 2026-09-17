@@ -381,6 +381,11 @@ class JarvisAPI:
                 turns=spend.get("turns") or 0,
                 duration_ms=spend.get("duration_ms") or 0,
                 dump_id=spend.get("dump_id"),
+                input_tokens=spend.get("input_tokens") or 0,
+                output_tokens=spend.get("output_tokens") or 0,
+                cache_read_tokens=spend.get("cache_read_tokens") or 0,
+                cache_write_tokens=spend.get("cache_write_tokens") or 0,
+                agents=spend.get("agents") or 0,
             )
         except OSError:
             return False  # bookkeeping must never kill a finished run
@@ -508,6 +513,16 @@ class JarvisAPI:
                     spend["turns"] = message.num_turns
                     spend["duration_ms"] = message.duration_ms
                     spend["dump_id"] = dump_id
+                    usage = message.usage if isinstance(message.usage, dict) else {}
+                    spend["input_tokens"] = usage.get("input_tokens") or 0
+                    spend["output_tokens"] = usage.get("output_tokens") or 0
+                    spend["cache_read_tokens"] = (
+                        usage.get("cache_read_input_tokens") or 0
+                    )
+                    spend["cache_write_tokens"] = (
+                        usage.get("cache_creation_input_tokens") or 0
+                    )
+                    spend["agents"] = len(delegations)
                 emit({
                     "type": "result",
                     "hint": _stop_hint(
